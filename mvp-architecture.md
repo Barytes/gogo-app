@@ -13,6 +13,7 @@
 - 对话区已经接上后端接口，但当前是 mock agent
 - 内容区尽量真实读取独立 knowledge-base repo 中的 `wiki/` 和 `raw/`
 - 整体使用 `uv + FastAPI + 静态前端`
+- 后端已经预留 Pi CLI 和 `my-agent-loop` 集成骨架
 
 ---
 
@@ -61,7 +62,7 @@ Browser
 | 后端 | FastAPI | 负责页面分发和 API |
 | Python 管理 | `uv` | 用于依赖安装与运行 |
 | 内容存储 | Markdown 与原始文件 | 通过 `KNOWLEDGE_BASE_DIR` 读取外部 knowledge-base repo |
-| Agent 对话 | Mock API | 当前用本地 wiki 匹配生成模拟回复 |
+| Agent 对话 | Mock / Pi / my-agent-loop | 默认 mock，可切换到安装在运行设备上的 `pi`，或导入本地 `my-agent-loop` |
 
 ---
 
@@ -80,8 +81,10 @@ workspace/
     ├── app/
     │   ├── backend/
     │   │   ├── config.py
+    │   │   ├── agent_service.py
     │   │   ├── main.py
     │   │   ├── chat_service.py
+    │   │   ├── raw_service.py
     │   │   └── wiki_service.py
     │   ├── frontend/
     │   │   ├── index.html
@@ -106,8 +109,10 @@ gogo-app/
 ├── app/
 │   ├── backend/
 │   │   ├── config.py
+│   │   ├── agent_service.py
 │   │   ├── main.py
 │   │   ├── chat_service.py
+│   │   ├── raw_service.py
 │   │   └── wiki_service.py
 │   ├── frontend/
 │   │   ├── index.html
@@ -180,6 +185,8 @@ gogo-app/
 - 提供 wiki 浏览 API
 - 挂载静态资源
 - 暴露当前绑定的 knowledge-base 路径
+- 根据配置在 mock 与 Pi CLI 之间切换 agent 后端
+- 根据配置在 mock、Pi CLI 与 `my-agent-loop` 之间切换 agent 后端
 
 ### 页面路由
 
@@ -243,7 +250,38 @@ gogo-app/
 - 为其他二进制文件提供元数据与打开链接
 - 支持按文件名、路径和文本内容做简单搜索
 
-### 3. `chat_service.py`
+### 3. `agent_service.py`
+
+文件：
+
+- `app/backend/agent_service.py`
+
+职责：
+
+- 作为 `/api/chat` 的统一入口
+- 根据 `AGENT_MODE` 选择 mock 或 Pi
+- 在 Pi 模式下组织本地检索上下文
+- 通过子进程调用安装在运行设备上的 `pi` CLI
+- Pi 不可用时回退到 mock
+
+Pi 集成原则：
+
+- 不把 Pi 源码包含进当前 repo
+- 只要求运行机器上正常安装 `pi`
+- 通过 `.env` 和 CLI 参数完成集成
+
+### 4. `my-agent-loop` 集成
+
+当前应用还支持把本地 `my-agent-loop` 作为另一种 agent backend。
+
+集成原则：
+
+- 不把 `my-agent-loop` 源码复制到当前 repo
+- 保持 `my-agent-loop` 为独立目录或独立 repo
+- 通过 `.env` 中的 `MY_AGENT_LOOP_DIR` 指向它
+- 由 `agent_service.py` 动态导入并直接调用它的 `chat()` 逻辑
+
+### 5. `chat_service.py`
 
 文件：
 
@@ -258,7 +296,7 @@ gogo-app/
 
 这层当前不是一个真实 agent runtime，而是一个可替换的模拟层。
 
-### 3. 外部知识库依赖
+### 6. 外部知识库依赖
 
 当前应用不会把提示词、schemas 和 wiki 内容存进自己的 repo。
 
@@ -295,9 +333,10 @@ Browser -> 若是其他二进制文件，打开 /raw/file?path=...
 
 ```text
 Browser -> POST /api/chat
-FastAPI -> chat_service
-chat_service -> wiki_service.search_pages(...)
-chat_service -> 返回 mock 回复 + 相关页面
+FastAPI -> agent_service
+agent_service -> mock path、Pi CLI path 或 my-agent-loop path
+agent_service -> wiki/raw retrieval
+agent_service -> 返回回复 + 相关页面
 Browser -> 渲染回复
 ```
 
@@ -316,6 +355,8 @@ Browser -> 渲染回复
 - raw 材料读取、列表、搜索、详情 API
 - raw 文件打开入口
 - mock chat 接口
+- Pi CLI 集成骨架
+- my-agent-loop 集成骨架
 - `uv` 项目管理
 - 独立 app repo + 独立 knowledge-base repo 的拆分结构
 
@@ -396,6 +437,23 @@ uv run uvicorn app.backend.main:app --reload
 
 ```bash
 KNOWLEDGE_BASE_DIR=../knowledge-base
+```
+
+Pi 集成也通过 `.env` 控制：
+
+```bash
+AGENT_MODE=mock
+PI_COMMAND=pi
+PI_TIMEOUT_SECONDS=180
+```
+
+my-agent-loop 集成也通过 `.env` 控制：
+
+```bash
+AGENT_MODE=my-agent-loop
+MY_AGENT_LOOP_DIR=../my-agent-loop
+MY_AGENT_LOOP_MODEL=grok-4-fast
+BUILDER_API_KEY=your-key
 ```
 
 打开页面：

@@ -8,7 +8,7 @@ from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .chat_service import simulate_chat
+from .agent_service import get_agent_backend_status, run_agent_chat
 from .config import get_knowledge_base_dir
 from .raw_service import (
     get_raw_file,
@@ -72,7 +72,13 @@ def wiki_page_shell() -> FileResponse:
 
 @app.get("/api/health")
 def healthcheck() -> dict[str, str]:
-    return {"status": "ok", "knowledge_base_dir": str(get_knowledge_base_dir())}
+    agent_status = get_agent_backend_status()
+    return {
+        "status": "ok",
+        "knowledge_base_dir": str(get_knowledge_base_dir()),
+        "agent_mode": agent_status["mode"],
+        "pi_available": str(agent_status["pi_available"]).lower(),
+    }
 
 
 @app.get("/api/chat/suggestions")
@@ -88,7 +94,7 @@ def chat_suggestions() -> dict[str, list[str]]:
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
-    return simulate_chat(
+    return run_agent_chat(
         message=request.message,
         history=[_dump_turn(turn) for turn in request.history],
     )
