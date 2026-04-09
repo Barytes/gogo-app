@@ -9,6 +9,7 @@ function focusChatInput() {
   if (!inputEl) {
     return;
   }
+  window.WorkbenchUI?.ensureChatVisible?.();
   inputEl.focus();
 }
 
@@ -47,7 +48,7 @@ function appendMessage(role, content, consultedPages = []) {
       link.textContent = page.title;
       link.addEventListener("click", () => {
         if (window.WikiWorkbench?.openPage) {
-          window.WikiWorkbench.openPage(page.path);
+          window.WikiWorkbench.openPage(page.path, page.source || "wiki");
         } else {
           window.location.href = `/?page=${encodeURIComponent(page.path)}`;
         }

@@ -5,7 +5,9 @@ This directory contains a lightweight web MVP for the research knowledge base.
 ## What It Includes
 
 - A FastAPI backend
-- A unified workbench UI with wiki/raw on the left and chat on the right
+- A unified workbench UI with two layout modes:
+  - Wiki mode: wiki/raw as the main surface, chat as a hideable floating panel
+  - Chat mode: chat as the main surface, wiki/raw as a hideable floating panel
 - A simulated agent response flow
 - A browser for both `wiki/` and `raw/` materials from an external knowledge-base repo
 

@@ -340,6 +340,7 @@ if (quoteIntoChatEl) {
     );
 
     if (window.ChatWorkbench?.focusInput) {
+      window.WorkbenchUI?.ensureChatVisible?.();
       window.ChatWorkbench.focusInput();
     }
   });
@@ -347,6 +348,7 @@ if (quoteIntoChatEl) {
 
 window.WikiWorkbench = {
   openPage: async (path, source = "wiki") => {
+    window.WorkbenchUI?.ensureWikiVisible?.();
     if (source !== activeMode) {
       setMode(source);
       searchEl.value = "";

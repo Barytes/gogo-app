@@ -6,7 +6,7 @@
 
 当前 MVP 的目标只有一条：
 
-1. 提供一个统一工作台，左侧浏览 wiki 和 raw，右侧直接和 agent 对话
+1. 提供一个统一工作台，在 Wiki 模式和 Chat 模式之间切换
 
 其中：
 
@@ -30,8 +30,8 @@
 ```text
 Browser
   -> Unified Workbench
-     - left: wiki + raw
-     - right: chat
+     - Wiki mode: wiki/raw main + chat floating
+     - Chat mode: chat main + wiki/raw floating
             |
             v
     FastAPI Backend
@@ -58,7 +58,7 @@ Browser
 
 | 层级 | 当前方案 | 说明 |
 |------|---------|------|
-| 前端 | 原生 HTML + CSS + JavaScript | 不需要构建步骤，当前是单页双栏工作台 |
+| 前端 | 原生 HTML + CSS + JavaScript | 不需要构建步骤，当前是单页双模式工作台 |
 | 后端 | FastAPI | 负责页面分发和 API |
 | Python 管理 | `uv` | 用于依赖安装与运行 |
 | 内容存储 | Markdown 与原始文件 | 通过 `KNOWLEDGE_BASE_DIR` 读取外部 knowledge-base repo |
@@ -91,6 +91,7 @@ workspace/
     │   │   ├── chat.html
     │   │   ├── wiki.html
     │   │   └── assets/
+    │   │       ├── workbench.js
     │   │       ├── styles.css
     │   │       ├── chat.js
     │   │       └── wiki.js
@@ -119,6 +120,7 @@ gogo-app/
 │   │   ├── chat.html
 │   │   ├── wiki.html
 │   │   └── assets/
+│   │       ├── workbench.js
 │   │       ├── styles.css
 │   │       ├── chat.js
 │   │       └── wiki.js
@@ -143,8 +145,9 @@ gogo-app/
 职责：
 
 - 把 wiki 浏览和 chat 对话放进同一个页面
-- 左侧显示 wiki/raw 切换、搜索、列表和正文
-- 右侧显示对话历史、建议问题和输入框
+- 支持 `Wiki 模式` 与 `Chat 模式`
+- Wiki 模式下以 wiki/raw 为主，chat 变成可隐藏浮窗
+- Chat 模式下以 chat 为主，wiki/raw 变成可隐藏浮窗
 - 支持在 wiki 页面与 chat 输入框之间做联动
 - 支持从 raw 材料打开原始文件
 
@@ -153,6 +156,8 @@ gogo-app/
 - 页面初始化时读取 `/api/wiki/pages`
 - 点击左侧页面后读取 `/api/wiki/page` 或 `/api/raw/file`
 - 右侧输入框把问题发送给 `/api/chat`
+- 用户可以随时切换 Wiki 模式和 Chat 模式
+- 浮动面板支持隐藏与重新打开
 - 聊天回复中的页面引用可以反向打开左侧 wiki 页面
 - 左侧当前页面可以一键引用到右侧提问框
 - 在 raw 模式下，文本材料直接显示，PDF 材料支持页面内预览，其他二进制材料提供打开原文件入口

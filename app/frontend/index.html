@@ -11,12 +11,26 @@
       <header class="topbar">
         <div>
           <p class="eyebrow">Research Knowledge Base Workbench</p>
-          <h1>左侧看 Wiki，右侧直接和 Agent 对话</h1>
+          <h1>Wiki 与 Chat 两种工作模式可以来回切换</h1>
         </div>
         <nav class="topnav">
           <a class="active" href="/">Workbench</a>
         </nav>
       </header>
+
+      <section class="workbench-modebar">
+        <div class="workspace-switch" role="tablist" aria-label="Workbench mode">
+          <button id="layout-mode-wiki" class="workspace-switch-button active" type="button">
+            Wiki 模式
+          </button>
+          <button id="layout-mode-chat" class="workspace-switch-button" type="button">
+            Chat 模式
+          </button>
+        </div>
+        <p class="helper-text">
+          Wiki 模式下以知识库阅读为主，Chat 会变成可隐藏浮窗。Chat 模式下则相反。
+        </p>
+      </section>
 
       <main class="workbench-grid">
         <section class="workbench-wiki">
@@ -43,6 +57,9 @@
                 <h2 id="wiki-title">正在加载页面</h2>
               </div>
               <div class="detail-actions">
+                <button id="hide-wiki-panel" class="button button-secondary floating-control" type="button">
+                  隐藏 Wiki
+                </button>
                 <a
                   id="open-source-file"
                   class="button button-secondary hidden"
@@ -68,9 +85,14 @@
               <p class="eyebrow">Mock Agent Runtime</p>
               <h2>Agent 对话</h2>
             </div>
-            <p class="helper-text">
-              当前是模拟答复，但会真实检索本地 wiki 页面。
-            </p>
+            <div class="chat-panel-actions">
+              <p class="helper-text">
+                当前是模拟答复，但会真实检索本地 wiki 页面。
+              </p>
+              <button id="hide-chat-panel" class="button button-secondary floating-control" type="button">
+                隐藏 Chat
+              </button>
+            </div>
           </div>
 
           <section class="chat-side-info">
@@ -102,8 +124,18 @@
           </form>
         </section>
       </main>
+
+      <div class="floating-dock">
+        <button id="show-wiki-panel" class="button button-primary hidden" type="button">
+          打开 Wiki
+        </button>
+        <button id="show-chat-panel" class="button button-primary hidden" type="button">
+          打开 Chat
+        </button>
+      </div>
     </div>
 
+    <script src="/assets/workbench.js"></script>
     <script src="/assets/wiki.js"></script>
     <script src="/assets/chat.js"></script>
   </body>
