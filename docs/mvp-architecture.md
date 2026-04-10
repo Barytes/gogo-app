@@ -8,7 +8,7 @@
 
 - 左侧或主画布浏览外部 `knowledge-base` 仓库中的 `wiki/` 与 `raw/`
 - 右侧以浮窗形式展示聊天面板
-- `/api/chat` 根据 `.env` 选择 `mock`、`pi` 或 `my-agent-loop`
+- `/api/chat` 固定使用 Pi SDK
 
 知识内容、提示词、schemas 仍然在外部 `knowledge-base` 仓库中，通过 `KNOWLEDGE_BASE_DIR` 连接。
 
@@ -35,9 +35,9 @@ Browser
 | 前端 | 原生 HTML/CSS/JS | 无构建步骤，单页工作台 |
 | 后端 | FastAPI | 页面分发、知识库 API、agent chat API |
 | Python 管理 | `uv` | Python 依赖安装与运行 |
-| Node 依赖 | `npm` | 仅在 `AGENT_MODE=pi` 时用于 Pi SDK bridge |
+| Node 依赖 | `npm` | 用于 Pi SDK bridge |
 | 内容来源 | 外部文件仓库 | 通过 `KNOWLEDGE_BASE_DIR` 读取 `wiki/` 与 `raw/` |
-| Agent 后端 | `mock` / `pi` / `my-agent-loop` | 由 `.env` 切换 |
+| Agent 后端 | Pi SDK | 固定由 Python -> Node bridge -> Pi SDK 执行 |
 
 ## 目录
 
@@ -46,7 +46,6 @@ gogo-app/
 ├── app/
 │   ├── backend/
 │   │   ├── agent_service.py
-│   │   ├── chat_service.py
 │   │   ├── config.py
 │   │   ├── main.py
 │   │   ├── pi_sdk_bridge.mjs
@@ -129,16 +128,11 @@ API 路由：
 - 区分文本、PDF 和其他二进制材料
 - 返回列表、详情、搜索结果和下载路径
 
-### `chat_service.py`
-
-- 提供 `mock` 路径
-- 基于本地 wiki 搜索结果生成模拟回答
-
 ### `agent_service.py`
 
 - 统一的 `/api/chat` 入口
-- 根据 `AGENT_MODE` 分发到 `mock`、`pi` 或 `my-agent-loop`
-- 在真实 agent 路径前先做本地 wiki/raw 检索
+- 在调用 Pi 前先做本地 wiki/raw 检索
+- 负责 Pi SDK 调用失败时的错误响应格式
 
 ### `pi_sdk_bridge.mjs`
 
@@ -146,23 +140,11 @@ API 路由：
 - 使用 Pi SDK 创建临时 session
 - 以知识库目录为只读工作区
 
-## Agent 模式
-
-### `AGENT_MODE=mock`
-
-- 不调用真实模型
-- 返回基于 wiki 搜索结果拼装出的模拟回复
-
-### `AGENT_MODE=pi`
+## Agent Runtime
 
 - Python 后端调用本地 Node bridge
 - Node bridge 使用 `@mariozechner/pi-coding-agent`
 - 当前使用只读工具集
-
-### `AGENT_MODE=my-agent-loop`
-
-- 动态导入外部 `my-agent-loop/main.py`
-- 直接调用其 `chat()` 入口
 
 ## 数据流
 
@@ -199,7 +181,7 @@ agent_service -> reply + consulted_pages
 - 单页工作台
 - wiki/raw 浏览与搜索
 - raw PDF 内嵌预览
-- `mock`、`pi`、`my-agent-loop` 三种聊天后端接线
+- Pi SDK 聊天后端接线
 - 外部 knowledge-base 仓库读取
 
 还没有做：
@@ -235,8 +217,6 @@ uv run uvicorn app.backend.main:app --reload
 
 ```bash
 KNOWLEDGE_BASE_DIR=../knowledge-base
-AGENT_MODE=mock
 PI_NODE_COMMAND=node
 PI_TIMEOUT_SECONDS=180
-MY_AGENT_LOOP_DIR=../my-agent-loop
 ```

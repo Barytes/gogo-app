@@ -9,7 +9,6 @@ from dotenv import load_dotenv
 
 APP_ROOT = Path(__file__).resolve().parents[2]
 DEFAULT_KNOWLEDGE_BASE_DIR = APP_ROOT.parent / "knowledge-base"
-DEFAULT_MY_AGENT_LOOP_DIR = APP_ROOT.parent / "my-agent-loop"
 
 load_dotenv(APP_ROOT / ".env")
 
@@ -18,10 +17,6 @@ def get_knowledge_base_dir() -> Path:
     raw_path = os.getenv("KNOWLEDGE_BASE_DIR")
     base_dir = Path(raw_path).expanduser() if raw_path else DEFAULT_KNOWLEDGE_BASE_DIR
     return base_dir.resolve()
-
-
-def get_agent_mode() -> str:
-    return os.getenv("AGENT_MODE", "mock").strip().lower()
 
 
 def get_pi_node_command() -> str:
@@ -52,14 +47,3 @@ def get_pi_node_command_path() -> str | None:
 
 def get_pi_sdk_bridge_path() -> Path:
     return APP_ROOT / "app" / "backend" / "pi_sdk_bridge.mjs"
-
-
-def get_my_agent_loop_dir() -> Path:
-    raw_path = os.getenv("MY_AGENT_LOOP_DIR")
-    base_dir = Path(raw_path).expanduser() if raw_path else DEFAULT_MY_AGENT_LOOP_DIR
-    return base_dir.resolve()
-
-
-def get_my_agent_loop_model() -> str | None:
-    value = os.getenv("MY_AGENT_LOOP_MODEL", "").strip()
-    return value or None

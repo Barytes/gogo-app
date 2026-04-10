@@ -6,7 +6,7 @@ Web workbench for browsing an external research knowledge base and chatting with
 
 - Unified single-page workbench
 - Wiki and raw material browsing
-- Chat panel backed by `mock`, `pi`, or `my-agent-loop`
+- Chat panel backed by Pi SDK
 - FastAPI backend with simple local-file APIs
 - External knowledge-base repo support via `KNOWLEDGE_BASE_DIR`
 
@@ -20,7 +20,7 @@ Web workbench for browsing an external research knowledge base and chatting with
 uv sync
 ```
 
-4. If you want `AGENT_MODE=pi`, install the Node dependency:
+4. Install the Node dependency:
 
 ```bash
 npm install
@@ -38,14 +38,13 @@ uv run uvicorn app.backend.main:app --reload
 
 The compatibility routes `http://127.0.0.1:8000/chat` and `http://127.0.0.1:8000/wiki` also open the same workbench page.
 
-## Agent Modes
+## Agent Backend
 
-- `AGENT_MODE=mock`
-  Returns simulated answers based on local wiki search.
-- `AGENT_MODE=pi`
-  Uses a local Node bridge and the Pi SDK with a read-only tool set rooted at `PI_WORKDIR` or `KNOWLEDGE_BASE_DIR`.
-- `AGENT_MODE=my-agent-loop`
-  Dynamically imports a sibling `my-agent-loop` project and calls its `chat()` entrypoint.
+`/api/chat` now only uses Pi.
+
+- Python backend calls a local Node bridge
+- the bridge uses `@mariozechner/pi-coding-agent`
+- Pi runs with a read-only workdir rooted at `PI_WORKDIR` or `KNOWLEDGE_BASE_DIR`
 
 ## Repo Boundary
 

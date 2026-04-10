@@ -4,11 +4,7 @@ version = "0.1.0"
 description = "FastAPI web MVP for the research knowledge base."
 requires-python = ">=3.9"
 dependencies = [
-  "beautifulsoup4>=4.12,<5.0",
   "fastapi>=0.115,<1.0",
-  "httpx>=0.27,<1.0",
-  "lxml>=5.0,<6.0",
-  "openai>=1.0,<2.0",
   "python-dotenv>=1.0,<2.0",
   "uvicorn[standard]>=0.30,<1.0",
 ]
