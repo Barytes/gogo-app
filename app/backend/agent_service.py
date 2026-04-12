@@ -1,13 +1,15 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import subprocess
-from typing import Any
+from typing import Any, AsyncIterator
 
 from .config import (
     get_pi_node_command,
     get_pi_node_command_path,
     get_pi_sdk_bridge_path,
+    get_pi_thinking_level,
     get_pi_timeout_seconds,
     get_pi_workdir,
 )
@@ -22,6 +24,7 @@ def get_agent_backend_status() -> dict[str, Any]:
         "pi_node_command": get_pi_node_command(),
         "pi_node_command_path": get_pi_node_command_path(),
         "pi_sdk_bridge_path": str(pi_sdk_bridge_path),
+        "pi_thinking_level": get_pi_thinking_level(),
         "pi_workdir": str(get_pi_workdir()),
         "pi_available": bool(get_pi_node_command_path()) and pi_sdk_bridge_path.exists(),
     }
@@ -107,6 +110,14 @@ def _build_consulted_pages(
     return pages
 
 
+def _default_suggested_prompts() -> list[str]:
+    return [
+        "请基于本地知识库继续展开这个判断。",
+        "这些页面之间的主要张力是什么？",
+        "如果只做一个下一步实验，最该做什么？",
+    ]
+
+
 def _pi_error_response(
     *,
     message: str,
@@ -118,6 +129,7 @@ def _pi_error_response(
         "mode": "pi",
         "message": message,
         "consulted_pages": consulted_pages or [],
+        "trace": [],
         "history_length": history_length,
         "suggested_prompts": [
             "请只根据当前命中的本地页面回答。",
@@ -128,13 +140,28 @@ def _pi_error_response(
     }
 
 
-def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str, Any]:
+def _pi_error_event(error_response: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "type": "error",
+        "message": error_response["message"],
+        "warnings": error_response["warnings"],
+        "consulted_pages": error_response["consulted_pages"],
+        "trace": error_response.get("trace", []),
+        "history_length": error_response["history_length"],
+        "suggested_prompts": error_response["suggested_prompts"],
+    }
+
+
+def _prepare_pi_request(
+    message: str, history: list[dict[str, str]]
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     wiki_hits, raw_hits = _collect_context(message)
     consulted_pages = _build_consulted_pages(wiki_hits, raw_hits)
+    history_length = len(history) + 1
 
     pi_node_command_path = get_pi_node_command_path()
     if not pi_node_command_path:
-        return _pi_error_response(
+        return None, _pi_error_response(
             message=(
                 "当前后端只支持 Pi agent，但运行机器上没有找到可用的 Node.js。\n"
                 "请先安装 Node.js，并在 gogo-app 目录执行 `npm install`。"
@@ -144,33 +171,47 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
                 "Install Node.js and the Pi SDK dependency.",
             ],
             consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            history_length=history_length,
         )
 
     pi_sdk_bridge_path = get_pi_sdk_bridge_path()
     if not pi_sdk_bridge_path.exists():
-        return _pi_error_response(
+        return None, _pi_error_response(
             message="Pi SDK bridge 脚本不存在，当前无法执行聊天请求。",
             warnings=["Pi SDK bridge script not found."],
             consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            history_length=history_length,
         )
 
-    prompt = _build_pi_prompt(message, history, wiki_hits, raw_hits)
-    system_prompt = _build_pi_system_prompt()
-
-    command = [pi_node_command_path, str(pi_sdk_bridge_path)]
-    bridge_payload = {
+    payload = {
         "cwd": str(get_pi_workdir()),
-        "system_prompt": system_prompt,
-        "prompt": prompt,
+        "system_prompt": _build_pi_system_prompt(),
+        "prompt": _build_pi_prompt(message, history, wiki_hits, raw_hits),
+        "thinking_level": get_pi_thinking_level(),
     }
+    return (
+        {
+            "command": [pi_node_command_path, str(pi_sdk_bridge_path)],
+            "cwd": str(get_pi_workdir()),
+            "payload": payload,
+            "consulted_pages": consulted_pages,
+            "history_length": history_length,
+        },
+        None,
+    )
+
+
+def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str, Any]:
+    prepared, error_response = _prepare_pi_request(message, history)
+    if error_response:
+        return error_response
+    assert prepared is not None
 
     try:
         result = subprocess.run(
-            command,
-            cwd=str(get_pi_workdir()),
-            input=json.dumps(bridge_payload),
+            prepared["command"],
+            cwd=prepared["cwd"],
+            input=json.dumps(prepared["payload"]),
             capture_output=True,
             text=True,
             timeout=get_pi_timeout_seconds(),
@@ -180,8 +221,8 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
         return _pi_error_response(
             message="Pi SDK 调用超时，本次请求没有拿到有效回复。",
             warnings=["Pi SDK bridge timed out."],
-            consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            consulted_pages=prepared["consulted_pages"],
+            history_length=prepared["history_length"],
         )
 
     if result.returncode != 0:
@@ -192,8 +233,8 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
                 f"Pi stderr: {stderr or 'no stderr output'}"
             ),
             warnings=[stderr or "Pi SDK bridge exited with a non-zero status."],
-            consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            consulted_pages=prepared["consulted_pages"],
+            history_length=prepared["history_length"],
         )
 
     try:
@@ -202,8 +243,8 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
         return _pi_error_response(
             message="Pi SDK 返回了无法解析的响应。",
             warnings=["Pi SDK bridge returned invalid JSON."],
-            consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            consulted_pages=prepared["consulted_pages"],
+            history_length=prepared["history_length"],
         )
 
     if not pi_response.get("ok"):
@@ -213,8 +254,8 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
         return _pi_error_response(
             message=f"Pi SDK 未能成功完成请求。\nPi error: {bridge_error}",
             warnings=[bridge_error],
-            consulted_pages=consulted_pages,
-            history_length=len(history) + 1,
+            consulted_pages=prepared["consulted_pages"],
+            history_length=prepared["history_length"],
         )
 
     message_text = (str(pi_response.get("message") or "")).strip() or "Pi SDK 未返回可见文本。"
@@ -227,15 +268,135 @@ def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str,
     return {
         "mode": "pi",
         "message": message_text,
-        "consulted_pages": consulted_pages,
-        "history_length": len(history) + 1,
-        "suggested_prompts": [
-            "请基于本地知识库继续展开这个判断。",
-            "这些页面之间的主要张力是什么？",
-            "如果只做一个下一步实验，最该做什么？",
-        ],
+        "consulted_pages": prepared["consulted_pages"],
+        "trace": pi_response.get("trace", []),
+        "history_length": prepared["history_length"],
+        "suggested_prompts": _default_suggested_prompts(),
         "warnings": warnings,
     }
+
+
+async def stream_agent_chat(
+    message: str, history: list[dict[str, str]] | None = None
+) -> AsyncIterator[dict[str, Any]]:
+    prepared, error_response = _prepare_pi_request(message, history or [])
+    if error_response:
+        yield _pi_error_event(error_response)
+        return
+    assert prepared is not None
+
+    consulted_pages = prepared["consulted_pages"]
+    yield {
+        "type": "context",
+        "consulted_pages": consulted_pages,
+    }
+
+    payload = dict(prepared["payload"])
+    payload["stream"] = True
+
+    process = await asyncio.create_subprocess_exec(
+        *prepared["command"],
+        cwd=prepared["cwd"],
+        stdin=asyncio.subprocess.PIPE,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+
+    assert process.stdin is not None
+    process.stdin.write(json.dumps(payload).encode("utf-8"))
+    await process.stdin.drain()
+    process.stdin.close()
+
+    timeout_seconds = get_pi_timeout_seconds()
+    final_event_seen = False
+
+    assert process.stdout is not None
+    while True:
+        try:
+            raw_line = await asyncio.wait_for(
+                process.stdout.readline(),
+                timeout=timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            process.kill()
+            await process.wait()
+            yield _pi_error_event(
+                _pi_error_response(
+                    message="Pi SDK 调用超时，本次请求没有拿到有效回复。",
+                    warnings=["Pi SDK bridge timed out while streaming."],
+                    consulted_pages=consulted_pages,
+                    history_length=prepared["history_length"],
+                )
+            )
+            return
+
+        if not raw_line:
+            break
+
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line:
+            continue
+
+        try:
+            event = json.loads(line)
+        except json.JSONDecodeError:
+            yield {
+                "type": "trace",
+                "item": {
+                    "kind": "status",
+                    "title": "Bridge parse warning",
+                    "detail": "收到了一条无法解析的 Pi 事件。",
+                },
+            }
+            continue
+
+        if not isinstance(event, dict):
+            continue
+
+        event_type = str(event.get("type") or "").strip()
+        if event_type == "final":
+            final_event_seen = True
+            event.setdefault("consulted_pages", consulted_pages)
+            event.setdefault("history_length", prepared["history_length"])
+            event.setdefault("suggested_prompts", _default_suggested_prompts())
+            yield event
+            continue
+
+        if event_type == "error":
+            final_event_seen = True
+            event.setdefault("consulted_pages", consulted_pages)
+            event.setdefault("history_length", prepared["history_length"])
+            event.setdefault(
+                "suggested_prompts",
+                [
+                    "请只根据当前命中的本地页面回答。",
+                    "请说明还缺哪些知识库内容。",
+                    "请把这个问题拆成更小的检索问题。",
+                ],
+            )
+            yield event
+            continue
+
+        yield event
+
+    stderr = ""
+    if process.stderr is not None:
+        stderr_bytes = await process.stderr.read()
+        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
+
+    returncode = await process.wait()
+    if returncode != 0 and not final_event_seen:
+        yield _pi_error_event(
+            _pi_error_response(
+                message=(
+                    "Pi SDK 调用失败，本次请求没有拿到有效回复。\n"
+                    f"Pi stderr: {stderr or 'no stderr output'}"
+                ),
+                warnings=[stderr or "Pi SDK bridge exited with a non-zero status."],
+                consulted_pages=consulted_pages,
+                history_length=prepared["history_length"],
+            )
+        )
 
 
 def run_agent_chat(message: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:

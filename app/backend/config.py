@@ -31,6 +31,14 @@ def get_pi_timeout_seconds() -> int:
         return 180
 
 
+def get_pi_thinking_level() -> str:
+    allowed = {"off", "minimal", "low", "medium", "high", "xhigh"}
+    value = os.getenv("PI_THINKING_LEVEL", "medium").strip().lower()
+    if value in allowed:
+        return value
+    return "medium"
+
+
 def get_pi_workdir() -> Path:
     raw_path = os.getenv("PI_WORKDIR")
     if raw_path:

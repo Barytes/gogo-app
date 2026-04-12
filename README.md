@@ -40,11 +40,14 @@ The compatibility routes `http://127.0.0.1:8000/chat` and `http://127.0.0.1:8000
 
 ## Agent Backend
 
-`/api/chat` now only uses Pi.
+The UI now uses `/api/chat/stream` for live Pi output.
+
+`/api/chat` remains available as a simple non-streaming JSON endpoint.
 
 - Python backend calls a local Node bridge
 - the bridge uses `@mariozechner/pi-coding-agent`
 - Pi runs with a read-only workdir rooted at `PI_WORKDIR` or `KNOWLEDGE_BASE_DIR`
+- live text deltas, raw Pi thinking deltas, and Pi trace events are streamed back to the browser
 
 ## Repo Boundary
 

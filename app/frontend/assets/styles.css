@@ -378,6 +378,166 @@ code {
   gap: 8px;
 }
 
+.message-trace {
+  margin-bottom: 14px;
+  border-bottom: 1px solid rgba(24, 92, 82, 0.1);
+  padding-bottom: 12px;
+}
+
+.message-trace summary {
+  cursor: pointer;
+  color: var(--brand);
+  font-weight: 700;
+  list-style: none;
+}
+
+.message-trace summary::-webkit-details-marker {
+  display: none;
+}
+
+.message-trace summary::before {
+  content: "▸";
+  display: inline-block;
+  margin-right: 8px;
+  transition: transform 160ms ease;
+}
+
+.message-trace[open] summary::before {
+  transform: rotate(90deg);
+}
+
+.trace-list,
+.trace-warning-list {
+  margin: 12px 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.trace-list {
+  display: grid;
+  gap: 10px;
+}
+
+.trace-worklog {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.trace-worklog-note,
+.trace-worklog-group {
+  padding: 14px 16px;
+  border-radius: 16px;
+  background: rgba(24, 92, 82, 0.05);
+  border: 1px solid rgba(24, 92, 82, 0.08);
+}
+
+.trace-worklog-thinking {
+  background: rgba(63, 77, 132, 0.08);
+  border-color: rgba(63, 77, 132, 0.14);
+}
+
+.trace-worklog-note p,
+.trace-worklog-status {
+  margin: 0;
+  color: var(--text);
+  line-height: 1.7;
+  white-space: pre-wrap;
+}
+
+.trace-worklog-status {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+.trace-worklog-title {
+  margin: 0;
+  font-size: 0.84rem;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  color: var(--muted);
+}
+
+.trace-worklog-list {
+  margin: 8px 0 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 6px;
+}
+
+.trace-worklog-list li {
+  color: var(--text);
+  line-height: 1.6;
+}
+
+.trace-item {
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(24, 92, 82, 0.05);
+  border: 1px solid rgba(24, 92, 82, 0.08);
+}
+
+.trace-item-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.trace-item strong {
+  font-size: 0.95rem;
+}
+
+.trace-item p,
+.trace-warning-list li,
+.trace-section-label {
+  margin: 8px 0 0;
+  color: var(--muted);
+  line-height: 1.6;
+  white-space: pre-wrap;
+}
+
+.trace-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 58px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.trace-status {
+  background: rgba(24, 92, 82, 0.12);
+  color: var(--brand);
+}
+
+.trace-tool {
+  background: rgba(177, 83, 47, 0.14);
+  color: var(--accent);
+}
+
+.trace-thinking {
+  background: rgba(63, 77, 132, 0.12);
+  color: #405082;
+}
+
+.trace-warnings {
+  margin-top: 14px;
+  padding-top: 12px;
+  border-top: 1px dashed rgba(24, 92, 82, 0.12);
+}
+
+.trace-section-label {
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+}
+
 .message-link,
 .chip {
   display: inline-flex;

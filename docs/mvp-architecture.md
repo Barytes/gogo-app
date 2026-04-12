@@ -75,6 +75,9 @@ gogo-app/
 - `Wiki 模式`：wiki/raw 占主画布，chat 为右侧可隐藏浮窗
 - `Chat 模式`：chat 占主画布，wiki/raw 为右侧可隐藏浮窗
 - 页面会读取 `/api/health`，显示当前实际 agent backend
+- 聊天请求走流式接口，文本、Pi 原始 thinking 增量与过程事件会边生成边显示
+- 过程区会把底层 trace 归并成更像 Codex 的工作日志摘要
+- 工作日志默认折叠，并显示在回答正文上方
 - raw 中的文本可直接展示，PDF 可内嵌预览，其他二进制文件提供原文件入口
 
 核心脚本：
@@ -82,6 +85,7 @@ gogo-app/
 - `workbench.js`：工作台模式与浮窗显隐
 - `wiki.js`：wiki/raw 列表、搜索、详情与引用
 - `chat.js`：聊天历史、建议问题、后端状态显示
+  同时负责消费流式 chat 事件，并把 Pi 原始 thinking、工具摘要与 warning 渲染到工作日志
 
 ## 后端
 
@@ -91,7 +95,7 @@ gogo-app/
 
 - 返回单页工作台
 - 提供 `wiki` / `raw` 浏览 API
-- 提供 `/api/chat` 和 `/api/health`
+- 提供 `/api/chat`、`/api/chat/stream` 和 `/api/health`
 - 将聊天请求转发到 `agent_service.py`
 
 页面路由：
@@ -106,6 +110,7 @@ API 路由：
 - `/api/health`
 - `/api/chat/suggestions`
 - `/api/chat`
+- `/api/chat/stream`
 - `/api/wiki/pages`
 - `/api/wiki/tree`
 - `/api/wiki/page`
@@ -130,15 +135,19 @@ API 路由：
 
 ### `agent_service.py`
 
-- 统一的 `/api/chat` 入口
+- 统一封装 Pi 聊天逻辑，服务 `/api/chat` 与 `/api/chat/stream`
 - 在调用 Pi 前先做本地 wiki/raw 检索
-- 负责 Pi SDK 调用失败时的错误响应格式
+- 负责同步和流式两条聊天链路
+- 在流式路径中将 Pi bridge 返回的文本增量、`trace` 和错误事件透传给前端
 
 ### `pi_sdk_bridge.mjs`
 
 - 由 Python 子进程调用
 - 使用 Pi SDK 创建临时 session
 - 以知识库目录为只读工作区
+- 订阅 Pi session 事件，并在流式模式下持续输出文本增量、原始 thinking 增量与过程 trace
+- 直接基于 `tool_execution_start` 和出错的 `tool_execution_end` 生成工具工作日志
+- 保留 Pi 原始 thinking 内容，不再由 bridge 合成中文思考摘要
 
 ## Agent Runtime
 
@@ -167,11 +176,13 @@ FastAPI -> raw_service -> external knowledge-base/raw
 ### 发起聊天
 
 ```text
-Browser -> POST /api/chat
+Browser -> POST /api/chat/stream
 FastAPI -> agent_service
 agent_service -> local wiki/raw retrieval
-agent_service -> selected backend
-agent_service -> reply + consulted_pages
+agent_service -> Python async stream
+agent_service -> Node bridge
+Node bridge -> Pi SDK session events
+FastAPI -> NDJSON stream (text delta + trace + final payload)
 ```
 
 ## 当前边界

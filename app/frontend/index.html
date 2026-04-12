@@ -101,7 +101,13 @@
             <div class="mini-card">
               <p class="mini-label">当前后端行为</p>
               <p id="agent-runtime-behavior">
-                <code>/api/chat</code> 会根据当前配置的 agent backend 生成回复，并返回相关本地页面引用。
+                <code>/api/chat/stream</code> 会流式返回文本增量、Pi 过程事件和最终结果。
+              </p>
+            </div>
+            <div class="mini-card">
+              <p class="mini-label">Pi 过程</p>
+              <p class="helper-text">
+                回复生成过程中，会实时追加 Pi 的事件过程、工具调用线索和 warning。
               </p>
             </div>
           </section>

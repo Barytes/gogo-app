@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 from pathlib import Path
+import json
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .agent_service import get_agent_backend_status, run_agent_chat
+from .agent_service import get_agent_backend_status, run_agent_chat, stream_agent_chat
 from .config import get_knowledge_base_dir
 from .raw_service import (
     get_raw_file,
@@ -98,6 +99,20 @@ def chat(request: ChatRequest) -> dict[str, object]:
         message=request.message,
         history=[_dump_turn(turn) for turn in request.history],
     )
+
+
+@app.post("/api/chat/stream")
+async def chat_stream(request: ChatRequest) -> StreamingResponse:
+    history = [_dump_turn(turn) for turn in request.history]
+
+    async def event_stream():
+        async for event in stream_agent_chat(
+            message=request.message,
+            history=history,
+        ):
+            yield f"{json.dumps(event, ensure_ascii=False)}\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
 
 
 @app.get("/api/wiki/pages")
