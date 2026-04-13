@@ -320,6 +320,37 @@ body.layout-chat .unified-chat-panel {
   align-items: flex-start;
 }
 
+.session-selector-block {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  width: 100%;
+  max-width: 320px;
+  margin-top: 8px;
+}
+
+.session-selector-block label {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+.session-selector {
+  flex: 1;
+  padding: 8px 12px;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: rgba(255, 255, 255, 0.8);
+  font-family: var(--sans);
+  font-size: 0.9rem;
+  cursor: pointer;
+  transition: border-color 160ms ease;
+}
+
+.session-selector:hover {
+  border-color: rgba(24, 92, 82, 0.28);
+}
+
 .chat-panel-header h2 {
   margin: 6px 0 0;
   font-family: var(--serif);

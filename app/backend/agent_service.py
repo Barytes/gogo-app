@@ -15,10 +15,12 @@ from .config import (
 )
 from .raw_service import search_raw_files
 from .wiki_service import search_pages
+from .session_manager import get_session_pool
 
 
 def get_agent_backend_status() -> dict[str, Any]:
     pi_sdk_bridge_path = get_pi_sdk_bridge_path()
+    pool = get_session_pool()
     return {
         "mode": "pi",
         "pi_node_command": get_pi_node_command(),
@@ -27,6 +29,7 @@ def get_agent_backend_status() -> dict[str, Any]:
         "pi_thinking_level": get_pi_thinking_level(),
         "pi_workdir": str(get_pi_workdir()),
         "pi_available": bool(get_pi_node_command_path()) and pi_sdk_bridge_path.exists(),
+        "session_pool_count": pool.get_session_count(),
     }
 
 
@@ -73,16 +76,14 @@ def _build_pi_prompt(
 
 
 def _build_pi_system_prompt() -> str:
-    prompt_lines = [
-        "You are answering inside a research knowledge-base workbench.",
-        "Use the local repository as the primary source of truth.",
-        "Prefer maintained wiki pages first, then raw materials when needed.",
-        "Treat this interaction as read-only. Do not edit files, run destructive commands, or write back changes.",
-        "If the local knowledge base is insufficient, say what is missing clearly.",
-        "Answer in Chinese unless the material clearly requires another language.",
-        "Cite the consulted local files you actually rely on.",
-    ]
-    return "\n".join(prompt_lines)
+    """构建精简的系统提示词，指引 Agent 阅读知识库规范并设定回答风格。"""
+    return "\n".join([
+        "你是一个课题组公共知识库的助手。优先阅读以下文档理解行为规范：",
+        "1. knowledge-base/AGENTS.md - 核心职责和工作流程",
+        "2. knowledge-base/COMMUNICATION.md - 沟通风格和协作方式",
+        "",
+        "回答风格：热情、耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema",
+    ])
 
 
 def _build_consulted_pages(
@@ -402,3 +403,63 @@ async def stream_agent_chat(
 
 def run_agent_chat(message: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
     return _run_pi_agent_chat(message=message, history=history or [])
+
+
+# ===========================
+# Session 池聊天函数（使用长连接）
+# ===========================
+
+def run_session_chat(
+    session_id: str,
+    message: str,
+    history: list[dict[str, str]] | None = None,
+) -> dict[str, Any]:
+    """
+    使用 Session 池进行聊天（同步模式）
+
+    Args:
+        session_id: Session ID
+        message: 用户消息
+        history: 对话历史
+
+    Returns:
+        聊天响应
+    """
+    pool = get_session_pool()
+    result = pool.send_message(
+        session_id=session_id,
+        message=message,
+        history=history or [],
+        stream=False,
+    )
+    if result is None:
+        return {
+            "ok": False,
+            "error": "Session 不存在或进程已终止",
+        }
+    return result
+
+
+async def stream_session_chat(
+    session_id: str,
+    message: str,
+    history: list[dict[str, str]] | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    """
+    使用 Session 池进行流式聊天
+
+    Args:
+        session_id: Session ID
+        message: 用户消息
+        history: 对话历史
+
+    Yields:
+        事件字典
+    """
+    pool = get_session_pool()
+    async for event in pool.send_message_async(
+        session_id=session_id,
+        message=message,
+        history=history or [],
+    ):
+        yield event

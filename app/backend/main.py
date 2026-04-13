@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from .agent_service import get_agent_backend_status, run_agent_chat, stream_agent_chat
+from .agent_service import get_agent_backend_status, run_agent_chat, stream_agent_chat, run_session_chat, stream_session_chat
 from .config import get_knowledge_base_dir
 from .raw_service import (
     get_raw_file,
@@ -18,6 +18,10 @@ from .raw_service import (
     search_raw_files,
 )
 from .wiki_service import get_page, get_tree, list_pages, search_pages
+from .session_manager import (
+    get_session_pool,
+    reset_session_pool,
+)
 
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
@@ -32,6 +36,12 @@ class ChatTurn(BaseModel):
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     history: list[ChatTurn] = Field(default_factory=list)
+    session_id: str | None = Field(default=None, description="Session ID（可选，用于多轮对话）")
+
+
+class CreateSessionRequest(BaseModel):
+    title: str = Field(default="", description="会话标题")
+    system_prompt: str = Field(default="", description="系统提示词")
 
 
 app = FastAPI(
@@ -95,6 +105,13 @@ def chat_suggestions() -> dict[str, list[str]]:
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
+    # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
+    if request.session_id:
+        return run_session_chat(
+            session_id=request.session_id,
+            message=request.message,
+            history=[_dump_turn(turn) for turn in request.history],
+        )
     return run_agent_chat(
         message=request.message,
         history=[_dump_turn(turn) for turn in request.history],
@@ -104,6 +121,17 @@ def chat(request: ChatRequest) -> dict[str, object]:
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     history = [_dump_turn(turn) for turn in request.history]
+
+    # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
+    if request.session_id:
+        async def session_event_stream():
+            async for event in stream_session_chat(
+                session_id=request.session_id,
+                message=request.message,
+                history=history,
+            ):
+                yield f"{json.dumps(event, ensure_ascii=False)}\n"
+        return StreamingResponse(session_event_stream(), media_type="application/x-ndjson")
 
     async def event_stream():
         async for event in stream_agent_chat(
@@ -179,3 +207,67 @@ def raw_file_download(path: str = Query(..., description="Relative file path ins
         raise HTTPException(status_code=404, detail=f"Raw file not found: {exc}") from exc
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+# ===========================
+# Session 管理 API
+# ===========================
+
+@app.get("/api/sessions")
+def list_sessions() -> dict[str, object]:
+    """获取所有活跃会话列表"""
+    pool = get_session_pool()
+    sessions = pool.list_sessions()
+    return {"sessions": sessions, "count": len(sessions)}
+
+
+@app.post("/api/sessions")
+def create_session(request: CreateSessionRequest) -> dict[str, object]:
+    """创建新会话"""
+    pool = get_session_pool()
+    session_id = pool.create_session(
+        system_prompt=request.system_prompt or None,
+    )
+    session = pool.get_session(session_id)
+    if request.title:
+        session.info.title = request.title
+    return {"session_id": session_id, "session": session.info.to_dict()}
+
+
+@app.delete("/api/sessions/{session_id}")
+def destroy_session(session_id: str) -> dict[str, object]:
+    """销毁指定会话"""
+    pool = get_session_pool()
+    success = pool.destroy_session(session_id)
+    return {"success": success, "session_id": session_id}
+
+
+@app.get("/api/sessions/{session_id}")
+def get_session(session_id: str) -> dict[str, object]:
+    """获取会话详情"""
+    pool = get_session_pool()
+    session = pool.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+    return {"session": session.info.to_dict()}
+
+
+@app.post("/api/sessions/{session_id}/chat/stream")
+async def session_chat_stream(session_id: str, request: ChatRequest) -> StreamingResponse:
+    """会话流式聊天"""
+    pool = get_session_pool()
+    session = pool.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    history = [{"role": turn.role, "content": turn.content} for turn in request.history]
+
+    async def event_stream():
+        async for event in pool.send_message_async(
+            session_id=session_id,
+            message=request.message,
+            history=history,
+        ):
+            yield f"{json.dumps(event, ensure_ascii=False)}\n"
+
+    return StreamingResponse(event_stream(), media_type="application/x-ndjson")

@@ -2,8 +2,91 @@ const messagesEl = document.querySelector("#messages");
 const formEl = document.querySelector("#chat-form");
 const inputEl = document.querySelector("#chat-input");
 const submitButtonEl = formEl?.querySelector("button[type='submit']");
+const sessionSelectorEl = document.querySelector("#session-selector");
+const newSessionButtonEl = document.querySelector("#new-session-button");
+const deleteSessionButtonEl = document.querySelector("#delete-session-button");
 
-const history = [];
+console.log("Chat elements:", {
+  messagesEl: !!messagesEl,
+  formEl: !!formEl,
+  inputEl: !!inputEl,
+  sessionSelectorEl: !!sessionSelectorEl,
+  newSessionButtonEl: !!newSessionButtonEl,
+  deleteSessionButtonEl: !!deleteSessionButtonEl,
+});
+
+let currentSessionId = null;
+const sessionHistories = new Map(); // 每个 session 的聊天记录缓存
+let history = []; // 当前会话的历史（始终指向当前 session 的数组引用）
+let currentStreamingMessage = null; // 跟踪正在流式接收的 AI 消息
+let currentStreamingSessionId = null; // 当前流式消息所属的 session
+const pendingSessionIds = new Set(); // 记录仍在等待回复的 session
+const STREAM_REQUEST_TIMEOUT_MS = 90000;
+
+function ensureSessionHistory(sessionId) {
+  if (!sessionId) {
+    return history;
+  }
+
+  const existingHistory = sessionHistories.get(sessionId);
+  if (existingHistory) {
+    return existingHistory;
+  }
+
+  const newHistory = [];
+  sessionHistories.set(sessionId, newHistory);
+  return newHistory;
+}
+
+function upsertAssistantTurn(targetHistory, content) {
+  const aiContent = String(content || "").trim();
+  if (!aiContent) {
+    return;
+  }
+
+  const lastMsg = targetHistory[targetHistory.length - 1];
+  if (lastMsg && lastMsg.role === "assistant") {
+    lastMsg.content = aiContent;
+    return;
+  }
+
+  targetHistory.push({ role: "assistant", content: aiContent });
+}
+
+function clearMessages() {
+  if (!messagesEl) {
+    return;
+  }
+  messagesEl.innerHTML = "";
+}
+
+function renderHistory(messages) {
+  if (!Array.isArray(messages) || !messages.length) {
+    return;
+  }
+  for (const msg of messages) {
+    appendMessage(msg.role, msg.content);
+  }
+}
+
+function saveCurrentHistory() {
+  const targetHistory = ensureSessionHistory(currentSessionId);
+
+  // 如果有正在进行的流式消息，先保存它的当前内容
+  if (currentStreamingMessage && currentStreamingSessionId === currentSessionId) {
+    const aiContent = currentStreamingMessage.getContent().trim();
+    if (aiContent && aiContent !== "Pi 正在生成答复...") {
+      upsertAssistantTurn(targetHistory, aiContent);
+    }
+  }
+
+  sessionHistories.set(currentSessionId, targetHistory);
+  history = targetHistory;
+}
+
+function loadSessionHistory(sessionId) {
+  return ensureSessionHistory(sessionId);
+}
 
 function scrollMessagesToBottom() {
   messagesEl.scrollTop = messagesEl.scrollHeight;
@@ -36,6 +119,10 @@ function setChatPending(isPending) {
   if (submitButtonEl) {
     submitButtonEl.disabled = isPending;
   }
+}
+
+function refreshChatPendingState() {
+  setChatPending(Boolean(currentSessionId && pendingSessionIds.has(currentSessionId)));
 }
 
 window.ChatWorkbench = {
@@ -296,6 +383,11 @@ function renderTrace(wrapper, trace = [], warnings = []) {
 }
 
 function appendMessage(role, content, consultedPages = [], trace = [], warnings = []) {
+  if (!messagesEl) {
+    console.warn("messagesEl not found, cannot append message");
+    return;
+  }
+
   const wrapper = document.createElement("article");
   wrapper.className = `message message-${role}`;
 
@@ -408,6 +500,7 @@ function createStreamingAssistantMessage(initialText) {
   }
 
   return {
+    element: wrapper,
     setContent(text) {
       hasActualText = true;
       textEl.textContent = text || "";
@@ -545,14 +638,28 @@ async function consumeNdjsonStream(response, onEvent) {
 }
 
 async function sendMessage(message) {
+  // 保存当前历史
+  saveCurrentHistory();
+
+  const requestSessionId = currentSessionId;
+  const requestHistory = history;
+
   appendMessage("user", message);
-  history.push({ role: "user", content: message });
+  requestHistory.push({ role: "user", content: message });
 
   const runtime = describeRuntime();
   const liveMessage = createStreamingAssistantMessage(runtime.pending);
+  upsertAssistantTurn(requestHistory, runtime.pending);
+  sessionHistories.set(requestSessionId, requestHistory);
+  currentStreamingMessage = liveMessage; // 跟踪当前流式消息
+  currentStreamingSessionId = requestSessionId;
+  pendingSessionIds.add(requestSessionId);
+  refreshChatPendingState();
   let finalPayload = null;
-
-  setChatPending(true);
+  const controller = new AbortController();
+  const timeoutId = window.setTimeout(() => {
+    controller.abort();
+  }, STREAM_REQUEST_TIMEOUT_MS);
 
   try {
     const response = await fetch("/api/chat/stream", {
@@ -560,9 +667,11 @@ async function sendMessage(message) {
       headers: {
         "Content-Type": "application/json",
       },
+      signal: controller.signal,
       body: JSON.stringify({
         message,
-        history,
+        history: requestHistory,
+        session_id: requestSessionId || undefined,
       }),
     });
 
@@ -611,18 +720,36 @@ async function sendMessage(message) {
         ? finalPayload.message
         : liveMessage.getContent().trim() || "Pi 没有返回最终结果。";
 
-    history.push({ role: "assistant", content: assistantMessage });
+    upsertAssistantTurn(requestHistory, assistantMessage);
+    sessionHistories.set(requestSessionId, requestHistory);
+    if (requestSessionId === currentSessionId && !messagesEl.contains(liveMessage.element)) {
+      clearMessages();
+      renderHistory(requestHistory);
+    }
+    if (currentStreamingMessage === liveMessage) {
+      currentStreamingMessage = null; // 清除当前会话的流式消息跟踪
+      currentStreamingSessionId = null;
+    }
   } catch (error) {
+    const isTimeout = error?.name === "AbortError";
+    const fallbackMessage = isTimeout
+      ? "Pi 回复超时，本次请求已自动停止。你可以重试，或切换会话继续提问。"
+      : "后端暂时没有返回结果。当前页面已经接好了流式调用链路，但服务可能还没启动。";
     liveMessage.finalize({
-      message: "后端暂时没有返回结果。当前页面已经接好了流式调用链路，但服务可能还没启动。",
+      message: fallbackMessage,
       warnings: [String(error?.message || error || "Unknown streaming error.")],
     });
-    history.push({
-      role: "assistant",
-      content: "后端暂时没有返回结果。当前页面已经接好了流式调用链路，但服务可能还没启动。",
-    });
+    const errorMessage = fallbackMessage;
+    upsertAssistantTurn(requestHistory, errorMessage);
+    sessionHistories.set(requestSessionId, requestHistory);
+    if (currentStreamingMessage === liveMessage) {
+      currentStreamingMessage = null; // 清除当前会话的流式消息跟踪
+      currentStreamingSessionId = null;
+    }
   } finally {
-    setChatPending(false);
+    window.clearTimeout(timeoutId);
+    pendingSessionIds.delete(requestSessionId);
+    refreshChatPendingState();
   }
 }
 
@@ -636,8 +763,176 @@ formEl.addEventListener("submit", async (event) => {
   await sendMessage(message);
 });
 
+async function loadSessions() {
+  try {
+    const response = await fetch("/api/sessions");
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    renderSessionSelector(data.sessions || []);
+  } catch (error) {
+    console.error("Failed to load sessions:", error);
+  }
+}
+
+function renderSessionSelector(sessions) {
+  if (!sessionSelectorEl) {
+    return;
+  }
+
+  sessionSelectorEl.innerHTML = "";
+
+  sessions.forEach((session) => {
+    const option = document.createElement("option");
+    option.value = session.session_id;
+    option.textContent = session.title || `会话 ${session.session_id.slice(0, 8)}`;
+    if (session.session_id === currentSessionId) {
+      option.selected = true;
+    }
+    sessionSelectorEl.appendChild(option);
+  });
+}
+
+async function createNewSession() {
+  console.log("createNewSession called, currentSessionId:", currentSessionId);
+  try {
+    // 保存当前会话历史
+    saveCurrentHistory();
+
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: `新会话 ${new Date().toLocaleTimeString()}`,
+        system_prompt: "",
+      }),
+    });
+    console.log("Create session response status:", response.status);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    console.log("Created session:", data);
+
+    // 清空聊天窗口
+    clearMessages();
+
+    // 切换到新会话
+    currentSessionId = data.session_id;
+    history = ensureSessionHistory(currentSessionId);
+
+    await loadSessions();
+    sessionSelectorEl.value = currentSessionId;
+    refreshChatPendingState();
+    appendMessage("assistant", `已创建新会话。现在可以开始多轮对话了。`);
+  } catch (error) {
+    console.error("Failed to create session:", error);
+    appendMessage("assistant", `创建会话失败：${error.message}`);
+  }
+}
+
+async function deleteCurrentSession() {
+  if (!currentSessionId) {
+    appendMessage("assistant", "当前没有活跃会话。");
+    return;
+  }
+
+  const sessionIdToDelete = currentSessionId;
+
+  try {
+    const response = await fetch(`/api/sessions/${sessionIdToDelete}`, {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    // 从缓存中移除
+    sessionHistories.delete(sessionIdToDelete);
+    pendingSessionIds.delete(sessionIdToDelete);
+    if (currentStreamingSessionId === sessionIdToDelete) {
+      currentStreamingSessionId = null;
+      currentStreamingMessage = null;
+    }
+
+    // 清空聊天窗口
+    clearMessages();
+
+    // 创建新会话
+    await createNewSessionOnLoad();
+    await loadSessions();
+
+    appendMessage("assistant", "已删除当前会话，已创建新会话。");
+  } catch (error) {
+    console.error("Failed to delete session:", error);
+    appendMessage("assistant", `删除会话失败：${error.message}`);
+  }
+}
+
+sessionSelectorEl?.addEventListener("change", (event) => {
+  const selectedId = event.target.value;
+  if (selectedId !== currentSessionId) {
+    // 保存当前会话历史（包括 AI 的回复）
+    saveCurrentHistory();
+
+    // 切换到新会话
+    currentSessionId = selectedId;
+    history = loadSessionHistory(currentSessionId);
+
+    // 清空聊天窗口
+    clearMessages();
+
+    // 加载目标会话的历史
+    const sessHistory = loadSessionHistory(currentSessionId);
+    if (sessHistory.length > 0) {
+      renderHistory(sessHistory);
+    } else {
+      appendMessage("assistant", "这是新会话的开始。");
+    }
+
+    refreshChatPendingState();
+
+    const sessionLabel = sessionSelectorEl.options[sessionSelectorEl.selectedIndex]?.text || "会话";
+    console.log("Switched to session:", sessionLabel, "history length:", history.length);
+  }
+});
+
+newSessionButtonEl?.addEventListener("click", createNewSession);
+deleteSessionButtonEl?.addEventListener("click", deleteCurrentSession);
+
 async function bootstrapChat() {
-  appendMessage("assistant", "这里是 Agent 对话。");
+  // 页面加载时自动创建新会话
+  await createNewSessionOnLoad();
+  await loadSessions();
+}
+
+async function createNewSessionOnLoad() {
+  try {
+    const response = await fetch("/api/sessions", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        title: `会话 ${new Date().toLocaleTimeString()}`,
+        system_prompt: "",
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+  const data = await response.json();
+  currentSessionId = data.session_id;
+  history = ensureSessionHistory(currentSessionId);
+  console.log("Auto-created session on load:", currentSessionId);
+  refreshChatPendingState();
+  } catch (error) {
+    console.error("Failed to auto-create session:", error);
+    appendMessage("assistant", `自动创建会话失败：${error.message}`);
+  }
 }
 
 bootstrapChat();

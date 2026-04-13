@@ -75,17 +75,28 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 
 对 `app/backend/agent_service.py` 和 `pi_sdk_bridge.mjs` 进行全面优化。
 
-- [ ] **0.1 优化 Pi Agent System Prompt**
-  - [ ] 指引 Agent 阅读知识库的 `AGENTS.md`
-  - [ ] 设定人格和回答风格（精简、直接）
-  - [ ] 移除冗余的系统提示词
+- [x] **0.1 优化 Pi Agent System Prompt** ✅ 已完成
+  - [x] 指引 Agent 阅读知识库的 `AGENTS.md`
+  - [x] 设定人格和回答风格
+  - [x] 移除冗余的系统提示词
 
-- [ ] **0.2 移除固定页面检索逻辑**
+- [x] **0.2 支持 Session 长连接和多会话管理** ✅ 已完成
+  - [x] 创建 `app/backend/session_manager.py` 独立模块
+  - [x] 实现 Session 池管理（创建、销毁、复用）
+  - [x] 实现长连接支持（避免每条问题新建 session）
+  - [x] 支持多个并发 session（多对话并行）
+  - [x] 新增 `GET /api/sessions` 路由（获取会话列表）
+  - [x] 新增 `POST /api/sessions` 路由（创建新会话）
+  - [x] 新增 `DELETE /api/sessions/{id}` 路由（删除会话）
+  - [x] 前端增加会话管理 UI（列表、新建、删除按钮）
+  - [x] 前端增加会话切换功能
+
+- [ ] **0.3 移除固定页面检索逻辑**
   - [ ] 移除 `_collect_context()` 中的固定检索调用
   - [ ] 由 Agent 按照 `schemas/query.md` 自行决定检索策略
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Agent 自主工具调用
 
-- [ ] **0.3 添加写回功能**
+- [ ] **0.4 添加写回功能**
   - [ ] 创建 `app/backend/write_service.py`
   - [ ] 实现 `create_wiki_page()` 和 `create_insight_page()` 函数
   - [ ] 遵循 `schemas/ingest.md` 和 `schemas/insight.md` 格式
@@ -93,7 +104,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 追加日志到 `wiki/log.md`
   - [ ] 新增 `POST /api/write/wiki` 和 `POST /api/write/insight` 路由
 
-- [ ] **0.4 设计 Tool 系统**（Skill 系统的基础）
+- [ ] **0.5 设计 Tool 系统**（Skill 系统的基础）
   - [ ] 定义 Tool 接口规范（输入、输出、错误处理）
   - [ ] 实现基础 Tool 注册机制
   - [ ] 实现文件读取 Tool（已存在，需封装）
@@ -102,7 +113,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 支持用户扩展自定义 Tool
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Tool 发现和调用
 
-- [ ] **0.5 设计 Skill 系统**（在 Tool 之上编排任务流程）
+- [ ] **0.6 设计 Skill 系统**（在 Tool 之上编排任务流程）
   - [ ] 定义 Skill 接口规范
   - [ ] 实现 `ingest` Skill（材料摄取）— 编排 read/classify/write Tool
   - [ ] 实现 `query` Skill（本地查询）— 编排 search/read/answer Tool
@@ -110,7 +121,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 支持用户扩展自定义 Skill
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Skill 调用
 
-- [ ] **0.6 支持 Model Provider 配置**
+- [ ] **0.7 支持 Model Provider 配置**
   - [ ] 新增 `MODEL_PROVIDER` 配置（支持不同 LLM Provider）
   - [ ] 新增 `MODEL_NAME` 配置（支持模型切换）
   - [ ] 保留 `PI_THINKING_LEVEL` 配置
@@ -241,6 +252,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 | 优先级 | 功能 | 说明 |
 |--------|------|------|
 | P0 | 0. 检查并优化 Agent 服务 | Agent 是核心引擎，优先优化 |
+| P0 | 0.2 Session 长连接和多会话管理 | 改善用户体验，支持多对话并行 |
 | P0 | 双层知识库支持 | 联邦架构的基础 |
 | P0 | 知识写回功能 | 核心价值"沉淀复利"的关键 |
 | P1 | Git 同步功能 | 联邦架构的同步机制 |
@@ -256,3 +268,6 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 | 2026-04-13 | 初始版本 | - |
 | 2026-04-13 | 修改检索优先级为个人知识库优先 | 更新 1.2、1.3 任务描述 |
 | 2026-04-13 | 新增任务 0：检查并优化 Agent 服务 | 新增 0.1-0.6 子任务 |
+| 2026-04-13 | 完成任务 0.1：优化 Pi Agent System Prompt | 移除 read-only 限制，更新 agent-architecture.md |
+| 2026-04-13 | 新增任务 0.7：Session 长连接和多会话管理 | 新增 session_manager.py 和会话管理 UI |
+| 2026-04-13 | 任务 0.7 移动到 0.2 位置 | 重新编号后续任务（原 0.2-0.7 → 0.3-0.7） |

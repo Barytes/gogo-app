@@ -1,4 +1,5 @@
 import process from "node:process";
+import readline from "node:readline";
 
 import {
   AuthStorage,
@@ -11,15 +12,40 @@ import {
 const MAX_TRACE_ITEMS = 64;
 const MAX_TRACE_DETAIL_LENGTH = 280;
 
-function readStdin() {
+function readFirstJsonLine(rl) {
   return new Promise((resolve, reject) => {
-    let raw = "";
-    process.stdin.setEncoding("utf8");
-    process.stdin.on("data", (chunk) => {
-      raw += chunk;
-    });
-    process.stdin.on("end", () => resolve(raw));
-    process.stdin.on("error", reject);
+    const onLine = (line) => {
+      const trimmed = String(line || "").trim();
+      if (!trimmed) {
+        return;
+      }
+      cleanup();
+      try {
+        resolve(JSON.parse(trimmed));
+      } catch (error) {
+        reject(error);
+      }
+    };
+
+    const onClose = () => {
+      cleanup();
+      resolve({});
+    };
+
+    const onError = (error) => {
+      cleanup();
+      reject(error);
+    };
+
+    const cleanup = () => {
+      rl.removeListener("line", onLine);
+      rl.removeListener("close", onClose);
+      rl.removeListener("error", onError);
+    };
+
+    rl.on("line", onLine);
+    rl.once("close", onClose);
+    rl.once("error", onError);
   });
 }
 
@@ -361,116 +387,323 @@ function emitEvent(event) {
 }
 
 let bridgeStreaming = false;
+let longRunningMode = false;
+let currentSession = null;
+let currentTrace = [];
+let currentAssistantText = "";
+let currentThinkingText = "";
 
-async function main() {
-  try {
-    const raw = await readStdin();
-    const payload = raw.trim() ? JSON.parse(raw) : {};
+function resetSessionState() {
+  currentTrace = [];
+  currentAssistantText = "";
+  currentThinkingText = "";
+}
 
-    const cwd =
-      typeof payload.cwd === "string" && payload.cwd.trim()
-        ? payload.cwd.trim()
-        : process.cwd();
-    const prompt = buildPrompt(payload.system_prompt, payload.prompt);
-    const streaming = payload.stream === true;
-    const thinkingLevel =
-      typeof payload.thinking_level === "string" && payload.thinking_level.trim()
-        ? payload.thinking_level.trim()
-        : "medium";
-    bridgeStreaming = streaming;
-    const trace = [];
+async function initSession(payload) {
+  const cwd =
+    typeof payload.cwd === "string" && payload.cwd.trim()
+      ? payload.cwd.trim()
+      : process.cwd();
+  const thinkingLevel =
+    typeof payload.thinking_level === "string" && payload.thinking_level.trim()
+      ? payload.thinking_level.trim()
+      : "medium";
+  const systemPrompt = typeof payload.system_prompt === "string" ? payload.system_prompt : "";
 
-    const authStorage = AuthStorage.create();
-    const modelRegistry = new ModelRegistry(authStorage);
-    const { session, modelFallbackMessage } = await createAgentSession({
-      cwd,
-      authStorage,
-      modelRegistry,
-      thinkingLevel,
-      sessionManager: SessionManager.inMemory(),
-      tools: createReadOnlyTools(cwd),
-    });
+  const authStorage = AuthStorage.create();
+  const modelRegistry = new ModelRegistry(authStorage);
+  const { session, modelFallbackMessage } = await createAgentSession({
+    cwd,
+    authStorage,
+    modelRegistry,
+    thinkingLevel,
+    sessionManager: SessionManager.inMemory(),
+    tools: createReadOnlyTools(cwd),
+  });
 
-    let assistantText = "";
-    let thinkingText = "";
-    session.subscribe((event) => {
-      const summarizedEvent = summarizePiEvent(event);
-      const traceEntry = addTraceEntry(trace, summarizedEvent);
-      if (streaming && traceEntry) {
-        emitEvent({ type: "trace", item: traceEntry });
-      }
+  currentSession = { session, modelFallbackMessage, cwd };
 
-      if (event?.type !== "message_update") {
-        return;
-      }
-
-      const assistantEvent = event.assistantMessageEvent;
-      if (!assistantEvent || typeof assistantEvent !== "object") {
-        return;
-      }
-
-      if (
-        assistantEvent.type === "thinking_delta" &&
-        typeof assistantEvent.delta === "string"
-      ) {
-        thinkingText += assistantEvent.delta;
-        if (streaming) {
-          emitEvent({ type: "thinking_delta", delta: assistantEvent.delta });
-        }
-      }
-
-      if (
-        assistantEvent.type === "text_delta" &&
-        typeof assistantEvent.delta === "string"
-      ) {
-        assistantText += assistantEvent.delta;
-        if (streaming) {
-          emitEvent({ type: "text_delta", delta: assistantEvent.delta });
-        }
-      }
-
-      if (
-        assistantEvent.type === "text_replace" &&
-        typeof assistantEvent.text === "string"
-      ) {
-        assistantText = assistantEvent.text;
-        if (streaming) {
-          emitEvent({ type: "text_replace", text: assistantEvent.text });
-        }
-      }
-    });
-
-    await session.prompt(prompt);
-
-    addTraceEntry(trace, buildThinkingTrace(thinkingText));
-
-    if (!assistantText.trim() && typeof session.getTree === "function") {
-      assistantText = findLatestAssistantText(session.getTree());
+  // 订阅 session 事件
+  currentSession.session.subscribe((event) => {
+    const summarizedEvent = summarizePiEvent(event);
+    const traceEntry = addTraceEntry(currentTrace, summarizedEvent);
+    if (bridgeStreaming && traceEntry && longRunningMode) {
+      emitEvent({ type: "trace", item: traceEntry });
     }
 
-    const warnings = [];
-    if (modelFallbackMessage) {
-      warnings.push(String(modelFallbackMessage));
-    }
-
-    const finalPayload = {
-      ok: true,
-      message: assistantText.trim(),
-      warnings,
-      trace,
-    };
-
-    if (streaming) {
-      emitEvent({
-        type: "final",
-        message: finalPayload.message,
-        warnings: finalPayload.warnings,
-        trace: finalPayload.trace,
-      });
+    if (event?.type !== "message_update") {
       return;
     }
 
+    const assistantEvent = event.assistantMessageEvent;
+    if (!assistantEvent || typeof assistantEvent !== "object") {
+      return;
+    }
+
+    if (
+      assistantEvent.type === "thinking_delta" &&
+      typeof assistantEvent.delta === "string"
+    ) {
+      currentThinkingText += assistantEvent.delta;
+      if (bridgeStreaming && longRunningMode) {
+        emitEvent({ type: "thinking_delta", delta: assistantEvent.delta });
+      }
+    }
+
+    if (
+      assistantEvent.type === "text_delta" &&
+      typeof assistantEvent.delta === "string"
+    ) {
+      currentAssistantText += assistantEvent.delta;
+      if (bridgeStreaming && longRunningMode) {
+        emitEvent({ type: "text_delta", delta: assistantEvent.delta });
+      }
+    }
+
+    if (
+      assistantEvent.type === "text_replace" &&
+      typeof assistantEvent.text === "string"
+    ) {
+      currentAssistantText = assistantEvent.text;
+      if (bridgeStreaming && longRunningMode) {
+        emitEvent({ type: "text_replace", text: assistantEvent.text });
+      }
+    }
+  });
+
+  return { cwd, thinkingLevel };
+}
+
+async function handlePrompt(payload) {
+  resetSessionState();
+
+  const prompt = payload.prompt || "";
+  const history = payload.history || [];
+  bridgeStreaming = payload.stream === true;
+
+  // 构建完整的 prompt（包含 history）
+  const fullPrompt = buildFullPrompt(prompt, history);
+
+  // 如果有 system_prompt，在首次初始化时使用
+  if (payload.system_prompt && !currentSession) {
+    await initSession(payload);
+  }
+
+  if (!currentSession) {
+    // 向后兼容：单次运行模式
+    await runOnce(payload);
+    return;
+  }
+
+  // 长连接模式：执行 prompt
+  try {
+    await currentSession.session.prompt(fullPrompt);
+
+    addTraceEntry(currentTrace, buildThinkingTrace(currentThinkingText));
+
+    if (!currentAssistantText.trim() && typeof currentSession.session.getTree === "function") {
+      currentAssistantText = findLatestAssistantText(currentSession.session.getTree());
+    }
+
+    const warnings = [];
+    if (currentSession.modelFallbackMessage) {
+      warnings.push(String(currentSession.modelFallbackMessage));
+    }
+
+    const finalPayload = {
+      type: "final",
+      message: currentAssistantText.trim(),
+      warnings,
+      trace: currentTrace,
+    };
+
+    if (bridgeStreaming && longRunningMode) {
+      emitEvent(finalPayload);
+    } else {
+      process.stdout.write(JSON.stringify({ ok: true, ...finalPayload }));
+      if (!longRunningMode) {
+        process.exit(0);
+      }
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : `Unknown Pi SDK error: ${String(error)}`;
+    if (bridgeStreaming && longRunningMode) {
+      emitEvent({ type: "error", message, warnings: [message], trace: [] });
+    } else {
+      process.stdout.write(JSON.stringify({ ok: false, error: message }));
+      if (!longRunningMode) {
+        process.exit(1);
+      }
+    }
+  }
+}
+
+function buildFullPrompt(prompt, history) {
+  const lines = [];
+
+  if (history && history.length > 0) {
+    lines.push("Recent chat history:");
+    for (const turn of history.slice(-6)) {
+      const role = turn.role || "user";
+      const content = turn.content || "";
+      lines.push(`- ${role}: ${content}`);
+    }
+    lines.push("");
+  }
+
+  lines.push("Current user question:");
+  lines.push(prompt);
+
+  return lines.join("\n");
+}
+
+async function runOnce(payload) {
+  // 单次运行模式（向后兼容）
+  const cwd =
+    typeof payload.cwd === "string" && payload.cwd.trim()
+      ? payload.cwd.trim()
+      : process.cwd();
+  const prompt = buildPrompt(payload.system_prompt, payload.prompt);
+  const streaming = payload.stream === true;
+  const thinkingLevel =
+    typeof payload.thinking_level === "string" && payload.thinking_level.trim()
+      ? payload.thinking_level.trim()
+      : "medium";
+  bridgeStreaming = streaming;
+  const trace = [];
+
+  const authStorage = AuthStorage.create();
+  const modelRegistry = new ModelRegistry(authStorage);
+  const { session, modelFallbackMessage } = await createAgentSession({
+    cwd,
+    authStorage,
+    modelRegistry,
+    thinkingLevel,
+    sessionManager: SessionManager.inMemory(),
+    tools: createReadOnlyTools(cwd),
+  });
+
+  let assistantText = "";
+  let thinkingText = "";
+  session.subscribe((event) => {
+    const summarizedEvent = summarizePiEvent(event);
+    const traceEntry = addTraceEntry(trace, summarizedEvent);
+    if (streaming && traceEntry) {
+      emitEvent({ type: "trace", item: traceEntry });
+    }
+
+    if (event?.type !== "message_update") {
+      return;
+    }
+
+    const assistantEvent = event.assistantMessageEvent;
+    if (!assistantEvent || typeof assistantEvent !== "object") {
+      return;
+    }
+
+    if (
+      assistantEvent.type === "thinking_delta" &&
+      typeof assistantEvent.delta === "string"
+    ) {
+      thinkingText += assistantEvent.delta;
+      if (streaming) {
+        emitEvent({ type: "thinking_delta", delta: assistantEvent.delta });
+      }
+    }
+
+    if (
+      assistantEvent.type === "text_delta" &&
+      typeof assistantEvent.delta === "string"
+    ) {
+      assistantText += assistantEvent.delta;
+      if (streaming) {
+        emitEvent({ type: "text_delta", delta: assistantEvent.delta });
+      }
+    }
+
+    if (
+      assistantEvent.type === "text_replace" &&
+      typeof assistantEvent.text === "string"
+    ) {
+      assistantText = assistantEvent.text;
+      if (streaming) {
+        emitEvent({ type: "text_replace", text: assistantEvent.text });
+      }
+    }
+  });
+
+  await session.prompt(prompt);
+
+  addTraceEntry(trace, buildThinkingTrace(thinkingText));
+
+  if (!assistantText.trim() && typeof session.getTree === "function") {
+    assistantText = findLatestAssistantText(session.getTree());
+  }
+
+  const warnings = [];
+  if (modelFallbackMessage) {
+    warnings.push(String(modelFallbackMessage));
+  }
+
+  const finalPayload = {
+    ok: true,
+    message: assistantText.trim(),
+    warnings,
+    trace,
+  };
+
+  if (streaming) {
+    emitEvent({
+      type: "final",
+      message: finalPayload.message,
+      warnings: finalPayload.warnings,
+      trace: finalPayload.trace,
+    });
+  } else {
     process.stdout.write(JSON.stringify(finalPayload));
+  }
+}
+
+async function main() {
+  try {
+    const rl = readline.createInterface({
+      input: process.stdin,
+      crlfDelay: Infinity,
+    });
+    const payload = await readFirstJsonLine(rl);
+
+    // 检查是否为长连接模式
+    longRunningMode = payload.mode === "long_running";
+
+    if (longRunningMode) {
+      // 长连接模式：初始化 session，然后持续接收请求
+      await initSession(payload);
+      emitEvent({ type: "ready", session_id: "active" });
+
+      // 持续逐行读取 stdin 请求
+      for await (const line of rl) {
+        const trimmed = String(line || "").trim();
+        if (!trimmed) {
+          continue;
+        }
+
+        try {
+          const reqPayload = JSON.parse(trimmed);
+          await handlePrompt(reqPayload);
+        } catch (error) {
+          emitEvent({
+            type: "error",
+            message: `Parse error: ${error.message}`,
+            warnings: [error.message],
+            trace: [],
+          });
+        }
+      }
+    } else {
+      // 单次运行模式（向后兼容）
+      await runOnce(payload);
+      rl.close();
+    }
   } catch (error) {
     const message =
       error instanceof Error ? error.message : `Unknown Pi SDK error: ${String(error)}`;

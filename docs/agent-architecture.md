@@ -166,18 +166,21 @@ _collect_context(message):
 ### 系统提示词 (`_build_pi_system_prompt`)
 
 ```python
-[
-    "You are answering inside a research knowledge-base workbench.",
-    "Use the local repository as the primary source of truth.",
-    "Prefer maintained wiki pages first, then raw materials when needed.",
-    "Treat this interaction as read-only. Do not edit files, run destructive commands, or write back changes.",
-    "If the local knowledge base is insufficient, say what is missing clearly.",
-    "Answer in Chinese unless the material clearly requires another language.",
-    "Cite the consulted local files you actually rely on.",
-]
+def _build_pi_system_prompt() -> str:
+    return "\n".join([
+        "你是一个课题组公共知识库的助手。优先阅读以下文档理解行为规范：",
+        "1. knowledge-base/AGENTS.md - 核心职责和工作流程",
+        "2. knowledge-base/COMMUNICATION.md - 沟通风格和协作方式",
+        "",
+        "回答风格：热情、耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema",
+    ])
 ```
 
-**注意**: 当前系统提示词仍标注 "read-only"，与实际支持的写回功能不一致。待更新。
+**设计说明**：
+- 精简到 6 行，指引 Agent 从文档中获取详细规则
+- 设定了热情、耐心、深入的回答风格
+- 移除了"read-only"限制，支持写回功能
+- 强调遵守知识库规则和保护 schema
 
 ---
 
@@ -243,7 +246,7 @@ _collect_context(message):
 | 架构描述 | 当前实现 | 差距 |
 |---------|---------|------|
 | 双层知识库检索（personal + public-pool） | 单层 `KNOWLEDGE_BASE_DIR` | ⚠️ 待实现 `PUBLIC_POOL_DIR` 支持 |
-| 系统提示词标注"read-only" | 代码中仍为 read-only | ⚠️ 待移除，支持写回 |
+| 系统提示词标注"read-only" | ✅ 已移除 | 完成 |
 | `should_suggest_contribution()` | 未实现 | ⚠️ 待实现贡献建议逻辑 |
 
 ---
@@ -267,3 +270,4 @@ _collect_context(message):
 |------|------|
 | 2026-04-13 | 初始版本 |
 | 2026-04-13 | 更新检索优先级为个人知识库优先（limit 6+4） |
+| 2026-04-13 | 优化系统提示词：指引 Agent 阅读 AGENTS.md，设定热情耐心风格，移除 read-only 限制 |
