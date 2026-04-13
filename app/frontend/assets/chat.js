@@ -21,7 +21,15 @@ let history = []; // 当前会话的历史（始终指向当前 session 的数�
 let currentStreamingMessage = null; // 跟踪正在流式接收的 AI 消息
 let currentStreamingSessionId = null; // 当前流式消息所属的 session
 const pendingSessionIds = new Set(); // 记录仍在等待回复的 session
+const hydratedSessionIds = new Set(); // 已从后端事件存储回放过的 session
 const STREAM_REQUEST_TIMEOUT_MS = 90000;
+
+function createRequestId() {
+  if (window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
 
 function ensureSessionHistory(sessionId) {
   if (!sessionId) {
@@ -86,6 +94,47 @@ function saveCurrentHistory() {
 
 function loadSessionHistory(sessionId) {
   return ensureSessionHistory(sessionId);
+}
+
+async function hydrateSessionHistoryFromStore(sessionId) {
+  if (!sessionId) {
+    return ensureSessionHistory(sessionId);
+  }
+
+  const targetHistory = ensureSessionHistory(sessionId);
+  if (targetHistory.length > 0 || hydratedSessionIds.has(sessionId)) {
+    return targetHistory;
+  }
+
+  try {
+    const safeSessionId = encodeURIComponent(sessionId);
+    const response = await fetch(`/api/sessions/${safeSessionId}/history?limit=200`);
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+    const data = await response.json();
+    const replayed = Array.isArray(data.history) ? data.history : [];
+    if (replayed.length > 0) {
+      targetHistory.length = 0;
+      replayed.forEach((item) => {
+        if (!item || typeof item !== "object") {
+          return;
+        }
+        const role = item.role === "assistant" ? "assistant" : "user";
+        const content = String(item.content || "");
+        if (!content.trim()) {
+          return;
+        }
+        targetHistory.push({ role, content });
+      });
+      sessionHistories.set(sessionId, targetHistory);
+    }
+    hydratedSessionIds.add(sessionId);
+  } catch (error) {
+    console.warn("Failed to hydrate session history:", sessionId, error);
+  }
+
+  return targetHistory;
 }
 
 function scrollMessagesToBottom() {
@@ -643,6 +692,7 @@ async function sendMessage(message) {
 
   const requestSessionId = currentSessionId;
   const requestHistory = history;
+  const requestId = createRequestId();
 
   appendMessage("user", message);
   requestHistory.push({ role: "user", content: message });
@@ -672,6 +722,7 @@ async function sendMessage(message) {
         message,
         history: requestHistory,
         session_id: requestSessionId || undefined,
+        request_id: requestId,
       }),
     });
 
@@ -823,6 +874,7 @@ async function createNewSession() {
     // 切换到新会话
     currentSessionId = data.session_id;
     history = ensureSessionHistory(currentSessionId);
+    hydratedSessionIds.add(currentSessionId);
 
     await loadSessions();
     sessionSelectorEl.value = currentSessionId;
@@ -852,6 +904,7 @@ async function deleteCurrentSession() {
 
     // 从缓存中移除
     sessionHistories.delete(sessionIdToDelete);
+    hydratedSessionIds.delete(sessionIdToDelete);
     pendingSessionIds.delete(sessionIdToDelete);
     if (currentStreamingSessionId === sessionIdToDelete) {
       currentStreamingSessionId = null;
@@ -872,7 +925,7 @@ async function deleteCurrentSession() {
   }
 }
 
-sessionSelectorEl?.addEventListener("change", (event) => {
+sessionSelectorEl?.addEventListener("change", async (event) => {
   const selectedId = event.target.value;
   if (selectedId !== currentSessionId) {
     // 保存当前会话历史（包括 AI 的回复）
@@ -881,9 +934,15 @@ sessionSelectorEl?.addEventListener("change", (event) => {
     // 切换到新会话
     currentSessionId = selectedId;
     history = loadSessionHistory(currentSessionId);
+    const switchTargetId = currentSessionId;
 
     // 清空聊天窗口
     clearMessages();
+
+    await hydrateSessionHistoryFromStore(switchTargetId);
+    if (currentSessionId !== switchTargetId) {
+      return;
+    }
 
     // 加载目标会话的历史
     const sessHistory = loadSessionHistory(currentSessionId);
@@ -927,6 +986,7 @@ async function createNewSessionOnLoad() {
   const data = await response.json();
   currentSessionId = data.session_id;
   history = ensureSessionHistory(currentSessionId);
+  hydratedSessionIds.add(currentSessionId);
   console.log("Auto-created session on load:", currentSessionId);
   refreshChatPendingState();
   } catch (error) {

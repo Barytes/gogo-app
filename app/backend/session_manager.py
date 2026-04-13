@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import subprocess
 import threading
 import time
@@ -23,10 +24,15 @@ from typing import Any, Callable
 from .config import (
     get_pi_node_command_path,
     get_pi_sdk_bridge_path,
+    get_session_event_store_dir,
     get_pi_thinking_level,
     get_pi_timeout_seconds,
     get_pi_workdir,
 )
+from .session_event_store import SessionEventStore
+
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -82,6 +88,25 @@ class SessionPool:
         self._sessions: dict[str, SessionProcess] = {}
         self._lock = threading.RLock()
         self._cleanup_task: asyncio.Task | None = None
+        self._event_store = SessionEventStore(get_session_event_store_dir())
+
+    def _record_event(
+        self,
+        *,
+        event_type: str,
+        session_id: str,
+        request_id: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        try:
+            self._event_store.append_event(
+                event_type=event_type,
+                session_id=session_id,
+                request_id=request_id,
+                payload=payload,
+            )
+        except Exception:
+            logger.exception("Failed to append session event")
 
     def create_session(
         self,
@@ -116,6 +141,15 @@ class SessionPool:
                 system_prompt=system_prompt,
             )
             session_process.process = process
+            self._record_event(
+                event_type="session_created",
+                session_id=session_id,
+                payload={
+                    "cwd": str(cwd) if cwd else str(get_pi_workdir()),
+                    "thinking_level": thinking_level or get_pi_thinking_level(),
+                    "has_system_prompt": bool(system_prompt),
+                },
+            )
 
             return session_id
 
@@ -203,6 +237,11 @@ class SessionPool:
         with self._lock:
             session = self._sessions.pop(session_id, None)
             if session:
+                self._record_event(
+                    event_type="session_destroyed",
+                    session_id=session_id,
+                    payload={"message_count": session.info.message_count},
+                )
                 self._terminate_process(session)
                 return True
             return False
@@ -270,6 +309,107 @@ class SessionPool:
 
         return cleaned
 
+    def replay_history(self, session_id: str, max_turns: int = 200) -> list[dict[str, str]]:
+        """
+        Rebuild chat history from persisted JSONL events.
+
+        Args:
+            session_id: Session ID
+            max_turns: Max number of turns (user/assistant items) to return
+        """
+        events = self._event_store.load_session_events(session_id)
+        if not events:
+            return []
+
+        requests: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        last_key: str | None = None
+
+        def ensure_request(key: str, ts: float) -> dict[str, Any]:
+            if key not in requests:
+                requests[key] = {
+                    "first_ts": ts,
+                    "user_message": "",
+                    "assistant_buffer": "",
+                    "final_message": "",
+                    "error_message": "",
+                }
+                order.append(key)
+            return requests[key]
+
+        for index, record in enumerate(events):
+            if not isinstance(record, dict):
+                continue
+            event_type = str(record.get("type") or "")
+            ts = float(record.get("ts") or 0.0)
+            request_id = record.get("request_id")
+            request_key = str(request_id).strip() if request_id else ""
+            if not request_key:
+                if event_type == "request_started":
+                    request_key = f"legacy-{index}"
+                elif last_key:
+                    request_key = last_key
+                else:
+                    request_key = f"orphan-{index}"
+
+            request_state = ensure_request(request_key, ts)
+            last_key = request_key
+
+            payload = record.get("payload")
+            payload = payload if isinstance(payload, dict) else {}
+
+            if event_type == "request_started":
+                message = payload.get("message")
+                if isinstance(message, str) and message.strip():
+                    request_state["user_message"] = message
+                continue
+
+            if event_type != "stream_event":
+                continue
+
+            stream_type = str(payload.get("type") or "")
+            if stream_type == "text_delta":
+                delta = payload.get("delta")
+                if isinstance(delta, str) and delta:
+                    request_state["assistant_buffer"] += delta
+                continue
+
+            if stream_type == "text_replace":
+                text = payload.get("text")
+                if isinstance(text, str):
+                    request_state["assistant_buffer"] = text
+                continue
+
+            if stream_type == "final":
+                final_message = payload.get("message")
+                if isinstance(final_message, str) and final_message.strip():
+                    request_state["final_message"] = final_message
+                continue
+
+            if stream_type == "error":
+                error_message = payload.get("message")
+                if isinstance(error_message, str) and error_message.strip():
+                    request_state["error_message"] = error_message
+
+        history: list[dict[str, str]] = []
+        for key in order:
+            state = requests.get(key, {})
+            user_message = str(state.get("user_message") or "").strip()
+            if user_message:
+                history.append({"role": "user", "content": user_message})
+
+            assistant_message = (
+                str(state.get("final_message") or "").strip()
+                or str(state.get("assistant_buffer") or "").strip()
+                or str(state.get("error_message") or "").strip()
+            )
+            if assistant_message:
+                history.append({"role": "assistant", "content": assistant_message})
+
+        if max_turns > 0 and len(history) > max_turns:
+            return history[-max_turns:]
+        return history
+
     async def start_cleanup_loop(self, interval: int = 300) -> None:
         """
         启动后台清理循环
@@ -277,6 +417,9 @@ class SessionPool:
         Args:
             interval: 清理间隔（秒）
         """
+
+        if self._cleanup_task and not self._cleanup_task.done():
+            return
 
         async def cleanup_loop():
             while True:
@@ -297,6 +440,7 @@ class SessionPool:
         message: str,
         history: list[dict[str, str]] | None = None,
         stream: bool = True,
+        request_id: str | None = None,
     ) -> dict[str, Any] | None:
         """
         发送消息到 Session（同步模式）
@@ -320,7 +464,18 @@ class SessionPool:
             "history": history or [],
             "thinking_level": thinking_level,
             "stream": stream,
+            "request_id": request_id,
         }
+        self._record_event(
+            event_type="request_started",
+            session_id=session_id,
+            request_id=request_id,
+            payload={
+                "message": message,
+                "history_length": len(history or []),
+                "stream": stream,
+            },
+        )
 
         with session._stdin_lock:
             try:
@@ -332,13 +487,32 @@ class SessionPool:
                     line = session.process.stdout.readline()
                     if line:
                         self.return_session(session_id)
-                        return json.loads(line)
+                        response = json.loads(line)
+                        self._record_event(
+                            event_type="request_completed",
+                            session_id=session_id,
+                            request_id=request_id,
+                            payload={"stream": stream, "ok": True},
+                        )
+                        return response
                 else:
                     # 流式模式：由调用者自行读取
                     self.return_session(session_id)
+                    self._record_event(
+                        event_type="request_completed",
+                        session_id=session_id,
+                        request_id=request_id,
+                        payload={"stream": stream, "ok": True},
+                    )
                     return {"ok": True}
 
             except Exception:
+                self._record_event(
+                    event_type="request_failed",
+                    session_id=session_id,
+                    request_id=request_id,
+                    payload={"stream": stream, "reason": "sync_send_exception"},
+                )
                 return None
 
         return None
@@ -348,6 +522,7 @@ class SessionPool:
         session_id: str,
         message: str,
         history: list[dict[str, str]] | None = None,
+        request_id: str | None = None,
     ):
         """
         发送消息到 Session（异步流式模式）
@@ -371,7 +546,19 @@ class SessionPool:
             "history": history or [],
             "thinking_level": thinking_level,
             "stream": True,
+            "request_id": request_id,
         }
+        self._record_event(
+            event_type="request_started",
+            session_id=session_id,
+            request_id=request_id,
+            payload={
+                "message": message,
+                "history_length": len(history or []),
+                "stream": True,
+            },
+        )
+        terminal_type = "stream_ended"
 
         try:
             with session._stdin_lock:
@@ -388,11 +575,19 @@ class SessionPool:
                         timeout=stream_timeout_seconds,
                     )
                 except asyncio.TimeoutError:
-                    yield {
+                    timeout_event = {
                         "type": "error",
                         "message": f"Session 响应超时（>{stream_timeout_seconds}s），请重试。",
                         "warnings": [f"Session stream timeout after {stream_timeout_seconds}s."],
                     }
+                    self._record_event(
+                        event_type="stream_event",
+                        session_id=session_id,
+                        request_id=request_id,
+                        payload=timeout_event,
+                    )
+                    yield timeout_event
+                    terminal_type = "timeout"
                     break
                 if not line:
                     returncode = session.process.poll()
@@ -407,22 +602,43 @@ class SessionPool:
                             f"Session 进程已退出（code={returncode}）。"
                             + (f" stderr: {stderr_text}" if stderr_text else "")
                         )
-                        yield {
+                        exited_event = {
                             "type": "error",
                             "message": detail,
                             "warnings": [detail],
                         }
+                        self._record_event(
+                            event_type="stream_event",
+                            session_id=session_id,
+                            request_id=request_id,
+                            payload=exited_event,
+                        )
+                        yield exited_event
+                        terminal_type = "process_exited"
                     break
                 try:
                     event = json.loads(line.strip())
+                    self._record_event(
+                        event_type="stream_event",
+                        session_id=session_id,
+                        request_id=request_id,
+                        payload=event,
+                    )
                     yield event
                     if event.get("type") in ("final", "error"):
+                        terminal_type = str(event.get("type"))
                         break
                 except json.JSONDecodeError:
                     continue
 
         finally:
             self.return_session(session_id)
+            self._record_event(
+                event_type="request_completed",
+                session_id=session_id,
+                request_id=request_id,
+                payload={"stream": True, "terminal_type": terminal_type},
+            )
 
 
 # 全局 Session 池实例

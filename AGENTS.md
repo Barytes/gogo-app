@@ -12,6 +12,10 @@ For knowledge-base content rules, consult the external knowledge-base repo, espe
 
 - `AGENTS.md` inside that knowledge-base repository
 
+For Pi agent / Pi SDK / bridge-related behavior and API questions, use the local Pi docs mirror first:
+
+- `docs/pi/` (copied Pi documentation)
+
 ## Document Hierarchy
 
 ```
@@ -79,6 +83,21 @@ If you implement a feature described in `TASKS.md`:
 
 This document should be treated as a living specification that always matches the current code.
 
+### Rule 6: Session/Bridge Docs Must Match Code
+
+Code explanation documents and their corresponding code files are centrally maintained in:
+
+- `docs/code-doc-mapping.md`
+
+**Whenever any mapped code file is modified, update the mapped doc(s) in the same change.**
+
+### Rule 7: Pi-Related Changes Must Reference Local Pi Docs
+
+When working on Pi-related implementation (e.g. `app/backend/pi_sdk_bridge.mjs`, session behavior, RPC/SDK usage):
+
+- Consult `docs/pi/` first as the primary reference.
+- If behavior differs from current code, document the gap in architecture/task docs before changing implementation.
+
 ## When Implementing Features
 
 1. **Read architecture first** — Understand the design in `client-architecture.md` or `server-architecture.md`
@@ -105,7 +124,9 @@ gogo-app/
 │   ├── product-definition-belief.md    # North Star
 │   ├── client-architecture.md          # Client design
 │   ├── server-architecture.md          # Server design
-│   └── agent-architecture.md           # Agent service design (KEEP SYNCED)
+│   ├── agent-architecture.md           # Agent service design (KEEP SYNCED)
+│   ├── pi/                             # Local mirror of Pi docs (reference first for Pi-related work)
+│   └── code-doc-mapping.md             # Code explanation doc ↔ code mapping
 ├── app/
 │   ├── backend/
 │   │   ├── main.py           # FastAPI entry point

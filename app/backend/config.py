@@ -55,3 +55,10 @@ def get_pi_node_command_path() -> str | None:
 
 def get_pi_sdk_bridge_path() -> Path:
     return APP_ROOT / "app" / "backend" / "pi_sdk_bridge.mjs"
+
+
+def get_session_event_store_dir() -> Path:
+    raw_path = os.getenv("SESSION_EVENT_STORE_DIR")
+    if raw_path:
+        return Path(raw_path).expanduser().resolve()
+    return (APP_ROOT.parent / ".gogo-sessions").resolve()

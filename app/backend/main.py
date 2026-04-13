@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
+import logging
 from pathlib import Path
 import json
+import uuid
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -26,6 +29,7 @@ from .session_manager import (
 
 ROOT_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = ROOT_DIR / "app" / "frontend"
+logger = logging.getLogger(__name__)
 
 
 class ChatTurn(BaseModel):
@@ -37,6 +41,7 @@ class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
     history: list[ChatTurn] = Field(default_factory=list)
     session_id: str | None = Field(default=None, description="Session ID（可选，用于多轮对话）")
+    request_id: str | None = Field(default=None, description="请求 ID（可选）")
 
 
 class CreateSessionRequest(BaseModel):
@@ -44,10 +49,23 @@ class CreateSessionRequest(BaseModel):
     system_prompt: str = Field(default="", description="系统提示词")
 
 
+@asynccontextmanager
+async def lifespan(_app: FastAPI):
+    pool = get_session_pool()
+    await pool.start_cleanup_loop()
+    logger.info("Session cleanup loop started")
+    try:
+        yield
+    finally:
+        reset_session_pool()
+        logger.info("Session pool reset and cleanup loop stopped")
+
+
 app = FastAPI(
     title="Research Knowledge Base MVP",
     description="FastAPI backend for a lightweight chat and wiki browser MVP.",
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 app.add_middleware(
@@ -64,6 +82,12 @@ def _dump_turn(turn: ChatTurn) -> dict[str, str]:
     if hasattr(turn, "model_dump"):
         return turn.model_dump()
     return turn.dict()
+
+
+def _resolve_request_id(raw_request_id: str | None) -> str:
+    if raw_request_id and raw_request_id.strip():
+        return raw_request_id.strip()
+    return str(uuid.uuid4())
 
 
 @app.get("/", include_in_schema=False)
@@ -105,22 +129,29 @@ def chat_suggestions() -> dict[str, list[str]]:
 
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
+    request_id = _resolve_request_id(request.request_id)
     # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
     if request.session_id:
-        return run_session_chat(
+        result = run_session_chat(
             session_id=request.session_id,
             message=request.message,
             history=[_dump_turn(turn) for turn in request.history],
+            request_id=request_id,
         )
-    return run_agent_chat(
+        result["request_id"] = request_id
+        return result
+    result = run_agent_chat(
         message=request.message,
         history=[_dump_turn(turn) for turn in request.history],
     )
+    result["request_id"] = request_id
+    return result
 
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
     history = [_dump_turn(turn) for turn in request.history]
+    request_id = _resolve_request_id(request.request_id)
 
     # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
     if request.session_id:
@@ -129,7 +160,9 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
                 session_id=request.session_id,
                 message=request.message,
                 history=history,
+                request_id=request_id,
             ):
+                event.setdefault("request_id", request_id)
                 yield f"{json.dumps(event, ensure_ascii=False)}\n"
         return StreamingResponse(session_event_stream(), media_type="application/x-ndjson")
 
@@ -138,6 +171,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             message=request.message,
             history=history,
         ):
+            event.setdefault("request_id", request_id)
             yield f"{json.dumps(event, ensure_ascii=False)}\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")
@@ -252,6 +286,23 @@ def get_session(session_id: str) -> dict[str, object]:
     return {"session": session.info.to_dict()}
 
 
+@app.get("/api/sessions/{session_id}/history")
+def get_session_history(
+    session_id: str,
+    limit: int = Query(200, ge=1, le=1000, description="最大返回 turn 数（user+assistant）"),
+) -> dict[str, object]:
+    """从本地 JSONL 事件存储中回放会话历史。"""
+    if "/" in session_id or "\\" in session_id or ".." in session_id:
+        raise HTTPException(status_code=400, detail="Invalid session_id format")
+    pool = get_session_pool()
+    history = pool.replay_history(session_id=session_id, max_turns=limit)
+    return {
+        "session_id": session_id,
+        "history": history,
+        "count": len(history),
+    }
+
+
 @app.post("/api/sessions/{session_id}/chat/stream")
 async def session_chat_stream(session_id: str, request: ChatRequest) -> StreamingResponse:
     """会话流式聊天"""
@@ -261,13 +312,16 @@ async def session_chat_stream(session_id: str, request: ChatRequest) -> Streamin
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
     history = [{"role": turn.role, "content": turn.content} for turn in request.history]
+    request_id = _resolve_request_id(request.request_id)
 
     async def event_stream():
         async for event in pool.send_message_async(
             session_id=session_id,
             message=request.message,
             history=history,
+            request_id=request_id,
         ):
+            event.setdefault("request_id", request_id)
             yield f"{json.dumps(event, ensure_ascii=False)}\n"
 
     return StreamingResponse(event_stream(), media_type="application/x-ndjson")

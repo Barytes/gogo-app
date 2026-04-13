@@ -2,7 +2,7 @@
 
 > 本文档描述当前代码实现状态，并维护一份任务列表追踪与 [client-architecture.md](docs/client-architecture.md) 和 [server-architecture.md](docs/server-architecture.md) 的差距。
 
-**最后更新**: 2026-04-13
+**最后更新**: 2026-04-14
 
 ---
 
@@ -91,12 +91,13 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [x] 前端增加会话管理 UI（列表、新建、删除按钮）
   - [x] 前端增加会话切换功能
 
-- [ ] **0.3 移除固定页面检索逻辑**
-  - [ ] 移除 `_collect_context()` 中的固定检索调用
-  - [ ] 由 Agent 按照 `schemas/query.md` 自行决定检索策略
-  - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Agent 自主工具调用
+- [ ] **0.2A Agent/Session 重构评估与迁移（Pi SDK 优先）**
+  - [x] 输出评估文档：[docs/agent-session-refactor-assessment.md](docs/agent-session-refactor-assessment.md)
+  - [ ] 完成 Pi SDK 会话能力探针（文件型 SessionManager / 历史读取 API）
+  - [ ] 确定迁移方案（B+ 渐进式，见评估文档第 6-7 节）
+  - [ ] 完成第一阶段迁移：`SessionManager.inMemory()` -> 文件型会话存储
 
-- [ ] **0.4 添加写回功能**
+- [ ] **0.3 添加写回功能**
   - [ ] 创建 `app/backend/write_service.py`
   - [ ] 实现 `create_wiki_page()` 和 `create_insight_page()` 函数
   - [ ] 遵循 `schemas/ingest.md` 和 `schemas/insight.md` 格式
@@ -104,7 +105,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 追加日志到 `wiki/log.md`
   - [ ] 新增 `POST /api/write/wiki` 和 `POST /api/write/insight` 路由
 
-- [ ] **0.5 设计 Tool 系统**（Skill 系统的基础）
+- [ ] **0.4 设计 Tool 系统**（Skill 系统的基础）
   - [ ] 定义 Tool 接口规范（输入、输出、错误处理）
   - [ ] 实现基础 Tool 注册机制
   - [ ] 实现文件读取 Tool（已存在，需封装）
@@ -113,7 +114,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 支持用户扩展自定义 Tool
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Tool 发现和调用
 
-- [ ] **0.6 设计 Skill 系统**（在 Tool 之上编排任务流程）
+- [ ] **0.5 设计 Skill 系统**（在 Tool 之上编排任务流程）
   - [ ] 定义 Skill 接口规范
   - [ ] 实现 `ingest` Skill（材料摄取）— 编排 read/classify/write Tool
   - [ ] 实现 `query` Skill（本地查询）— 编排 search/read/answer Tool
@@ -121,12 +122,46 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 支持用户扩展自定义 Skill
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持 Skill 调用
 
-- [ ] **0.7 支持 Model Provider 配置**
+- [ ] **0.6 支持 Model Provider 配置**
   - [ ] 新增 `MODEL_PROVIDER` 配置（支持不同 LLM Provider）
   - [ ] 新增 `MODEL_NAME` 配置（支持模型切换）
   - [ ] 保留 `PI_THINKING_LEVEL` 配置
   - [ ] 更新 `config.py` 支持新配置项
   - [ ] 更新 `pi_sdk_bridge.mjs` 支持动态模型配置
+
+- [ ] **0.7 疑点：`_build_pi_prompt` 中的 history 处理**
+  - [ ] **问题**：当前 `_build_pi_prompt()` 手动将最近 6 轮 history 附加到 prompt 中（`agent_service.py:54-59`）
+  - [ ] **疑点**：Pi SDK 的 Session 应该自动管理对话历史（通过 `session.getTree()`），不需要我们手动传递 history
+  - [ ] **待确认**：是否需要移除手动传递的 history，改为依赖 Session 自身的历史记录？
+  - [ ] **相关代码**：`session_manager.py` 中的 `send_message()` 已经传递了 `history` 参数
+
+- [ ] **0.8 移除固定检索和 consulted_pages 注入（合并原 0.3 + 0.9）**
+  - [ ] **当前设计**：
+    ```python
+    # agent_service.py: _prepare_pi_request()
+    wiki_hits, raw_hits = _collect_context(message)  # 固定检索 6+4
+    consulted_pages = _build_consulted_pages(...)    # 构建引用列表
+    prompt = _build_pi_prompt(..., wiki_hits, raw_hits)  # 注入 prompt
+    payload = { prompt, consulted_pages }            # 传给 Pi
+    ```
+  - [ ] **问题**：
+    1. 检索时机过早 — 在 Agent 有机会决定是否需要检索之前，就已经检索并注入了
+    2. 检索策略固定 — limit=6+4 是硬编码的，无法根据问题类型调整
+    3. 与 Tool 系统目标矛盾 — 如果 Agent 能自主调用检索工具，就不需要预先注入
+  - [ ] **目标设计**：
+    - 由 Agent 按照 `schemas/query.md`（待创建）自行决定是否需要检索、检索什么、检索多少
+    - `pi_sdk_bridge.mjs:421` 已调用 `createReadOnlyTools(cwd)`，需要确保检索 Tool 被正确封装和注册
+    - 移除 `_collect_context()` 的自动调用，改为 Tool 形式供 Agent 调用
+  - [ ] **需要修改的代码**：
+    - [ ] `agent_service.py`: 移除 `_collect_context()` 在 `_prepare_pi_request()` 中的调用
+    - [ ] `agent_service.py`: 移除 `_build_pi_prompt()` 中的 `wiki_hits` 和 `raw_hits` 参数
+    - [ ] `agent_service.py`: 移除 `consulted_pages` 的构建和传递
+    - [ ] `wiki_service.py`: 封装 `search_pages()` 为 Tool 接口
+    - [ ] `raw_service.py`: 封装 `search_raw_files()` 为 Tool 接口
+    - [ ] `pi_sdk_bridge.mjs`: 确保检索 Tool 对 Agent 可见并可调用
+  - [ ] **过渡期考虑**：
+    - 当前 Pi SDK 的 Tool 是否支持自定义注册需要确认
+    - 如果 Tool 系统尚未就绪，可以先保留固定检索作为 fallback
 
 ---
 
@@ -271,3 +306,6 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 | 2026-04-13 | 完成任务 0.1：优化 Pi Agent System Prompt | 移除 read-only 限制，更新 agent-architecture.md |
 | 2026-04-13 | 新增任务 0.7：Session 长连接和多会话管理 | 新增 session_manager.py 和会话管理 UI |
 | 2026-04-13 | 任务 0.7 移动到 0.2 位置 | 重新编号后续任务（原 0.2-0.7 → 0.3-0.7） |
+| 2026-04-13 | 合并任务 0.3 和 0.9 | 原 0.3「移除固定检索」和 0.9「consulted_pages 疑点」合并为新的 0.9，任务重新编号（原 0.4-0.7 → 0.3-0.6） |
+| 2026-04-13 | 新增任务 0.8「history 处理疑点」 | 记录 `_build_pi_prompt` 中手动传递 history 与 Session 自动管理历史的疑问 |
+| 2026-04-14 | 新增任务 0.2A（Agent/Session 重构评估） | 新增 `docs/agent-session-refactor-assessment.md` 并挂到任务 0 |

@@ -82,7 +82,7 @@ def _build_pi_system_prompt() -> str:
         "1. knowledge-base/AGENTS.md - 核心职责和工作流程",
         "2. knowledge-base/COMMUNICATION.md - 沟通风格和协作方式",
         "",
-        "回答风格：热情、耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema",
+        "个性：耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，但语言保持准确精炼不啰嗦，给出高信噪比的回答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema。",
     ])
 
 
@@ -413,6 +413,7 @@ def run_session_chat(
     session_id: str,
     message: str,
     history: list[dict[str, str]] | None = None,
+    request_id: str | None = None,
 ) -> dict[str, Any]:
     """
     使用 Session 池进行聊天（同步模式）
@@ -421,6 +422,7 @@ def run_session_chat(
         session_id: Session ID
         message: 用户消息
         history: 对话历史
+        request_id: 请求 ID
 
     Returns:
         聊天响应
@@ -431,6 +433,7 @@ def run_session_chat(
         message=message,
         history=history or [],
         stream=False,
+        request_id=request_id,
     )
     if result is None:
         return {
@@ -444,6 +447,7 @@ async def stream_session_chat(
     session_id: str,
     message: str,
     history: list[dict[str, str]] | None = None,
+    request_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """
     使用 Session 池进行流式聊天
@@ -452,6 +456,7 @@ async def stream_session_chat(
         session_id: Session ID
         message: 用户消息
         history: 对话历史
+        request_id: 请求 ID
 
     Yields:
         事件字典
@@ -461,5 +466,6 @@ async def stream_session_chat(
         session_id=session_id,
         message=message,
         history=history or [],
+        request_id=request_id,
     ):
         yield event

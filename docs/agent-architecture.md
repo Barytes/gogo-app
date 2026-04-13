@@ -2,7 +2,7 @@
 
 > 本文档描述 Agent 服务的架构设计和当前实现状态。
 
-**最后更新**: 2026-04-13
+**最后更新**: 2026-04-14
 
 ---
 
@@ -33,11 +33,21 @@ Agent 服务是 gogo-app 的核心推理引擎，负责：
                │
                ▼
 ┌─────────────────────────────────────┐
+│  Session Pool (session_manager.py)  │
+│  - 管理长连接 Node 进程池              │
+│  - 多会话并行                         │
+│  - 空闲超时回收                       │
+│  (详情见 docs/session-management.md) │
+└──────────────┬──────────────────────┘
+               │
+               ▼
+┌─────────────────────────────────────┐
 │  Agent Service (agent_service.py)   │
 │  - _collect_context()  检索知识库    │
 │  - _prepare_pi_request() 准备请求    │
 │  - run_agent_chat()    同步调用      │
 │  - stream_agent_chat() 异步流式调用  │
+│  - run_session_chat()  Session 池调用 │
 └──────────────┬──────────────────────┘
                │ JSON payload
                ▼
@@ -60,17 +70,24 @@ Agent 服务是 gogo-app 的核心推理引擎，负责：
 **职责**:
 - 检索本地知识库（wiki + raw）
 - 构建 Pi SDK 提示词
-- 调用 Pi SDK Bridge
+- 通过 Session 池调用 Pi SDK（长连接模式）
 - 处理同步和流式响应
 - 错误处理和超时控制
+
+**依赖**:
+- `session_manager.py` — Session 池管理（详见 [docs/session-management.md](session-management.md)）
+- `wiki_service.py` — Wiki 知识检索
+- `raw_service.py` — Raw 材料检索
 
 #### 公开函数
 
 | 函数 | 描述 | 返回类型 |
 |------|------|---------|
 | `get_agent_backend_status()` | 获取 Agent 后端状态 | `dict` |
-| `run_agent_chat(message, history)` | 同步聊天调用 | `dict` |
-| `stream_agent_chat(message, history)` | 异步流式聊天 | `AsyncIterator[dict]` |
+| `run_agent_chat(message, history)` | 同步聊天调用（单次模式） | `dict` |
+| `stream_agent_chat(message, history)` | 异步流式聊天（单次模式） | `AsyncIterator[dict]` |
+| `run_session_chat(session_id, message, history, request_id)` | Session 池同步调用 | `dict` |
+| `stream_session_chat(session_id, message, history, request_id)` | Session 池流式调用 | `AsyncIterator[dict]` |
 
 #### 内部函数
 
@@ -84,39 +101,22 @@ Agent 服务是 gogo-app 的核心推理引擎，负责：
 | `_run_pi_agent_chat(...)` | 执行 Pi 调用（同步） |
 | `_pi_error_response(...)` | 构建错误响应 |
 | `_pi_error_event(...)` | 构建流式错误事件 |
+| `_default_suggested_prompts()` | 获取默认建议问题列表 |
 
 ---
 
-### 2. `pi_sdk_bridge.mjs` — Pi SDK 桥接
+### 2. `pi_sdk_bridge.mjs` — Pi SDK 桥接（摘要）
 
 **文件**: `app/backend/pi_sdk_bridge.mjs`
 
-**职责**:
+**职责（简述）**:
 - 由 Python 子进程调用
-- 使用 `@mariozechner/pi-coding-agent` 创建临时 session
-- 以知识库目录为只读工作区
-- 订阅 Pi session 事件
-- 流式输出文本增量、thinking 增量、trace 事件
+- 调用 `@mariozechner/pi-coding-agent` 并维护 long-running session
+- 将 Pi SDK 事件转换为 NDJSON（`trace/thinking_delta/text_delta/final/error`）
 
-**输入** (JSON):
-```json
-{
-  "cwd": "/path/to/workdir",
-  "system_prompt": "...",
-  "prompt": "...",
-  "thinking_level": "medium",
-  "stream": true
-}
-```
+桥接层的详细架构、输入输出协议、事件模型和历史问题，请见：
 
-**输出** (NDJSON):
-```json
-{"type": "context", ...}
-{"type": "thinking_delta", "delta": "..."}
-{"type": "text_delta", "delta": "..."}
-{"type": "trace", "item": {...}}
-{"type": "final", "message": "...", "trace": [...]}
-```
+- [docs/pi-sdk-bridge-architecture.md](pi-sdk-bridge-architecture.md)
 
 ---
 
@@ -138,6 +138,7 @@ Agent 服务是 gogo-app 的核心推理引擎，负责：
 6. yield {"type": "context", "consulted_pages": [...]}
    ↓
 7. 启动 Node.js 子进程 (pi_sdk_bridge.mjs)
+   （桥接细节见 `docs/pi-sdk-bridge-architecture.md`）
    ↓
 8. 读取 stdout 事件流
    ├→ thinking_delta → yield
@@ -172,7 +173,7 @@ def _build_pi_system_prompt() -> str:
         "1. knowledge-base/AGENTS.md - 核心职责和工作流程",
         "2. knowledge-base/COMMUNICATION.md - 沟通风格和协作方式",
         "",
-        "回答风格：热情、耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema",
+        "个性：耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，但语言保持准确精炼不啰嗦，给出高信噪比的回答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema。",
     ])
 ```
 
@@ -196,6 +197,8 @@ def _build_pi_system_prompt() -> str:
 | `trace` | 工具执行 trace | `item` |
 | `final` | 最终响应 | `message`, `trace`, `warnings`, `consulted_pages` |
 | `error` | 错误事件 | `message`, `warnings` |
+
+说明：流式链路会附带统一 `request_id` 字段，用于跨前后端日志追踪。
 
 ---
 
@@ -245,9 +248,9 @@ def _build_pi_system_prompt() -> str:
 
 | 架构描述 | 当前实现 | 差距 |
 |---------|---------|------|
-| 双层知识库检索（personal + public-pool） | 单层 `KNOWLEDGE_BASE_DIR` | ⚠️ 待实现 `PUBLIC_POOL_DIR` 支持 |
-| 系统提示词标注"read-only" | ✅ 已移除 | 完成 |
-| `should_suggest_contribution()` | 未实现 | ⚠️ 待实现贡献建议逻辑 |
+| 双层知识库检索（personal + public-pool） | 单层 `KNOWLEDGE_BASE_DIR` | ⚠️ 待实现：`wiki_service.py` 和 `raw_service.py` 需支持 `PUBLIC_POOL_DIR` |
+| 贡献建议逻辑 | 无 | ⚠️ 待实现：`should_suggest_contribution()` 和 `mark_for_contribution()` |
+| 写回服务集成 | 无 | ⚠️ 待实现：Agent 回答后支持一键写回 wiki/insights |
 
 ---
 
@@ -261,6 +264,7 @@ def _build_pi_system_prompt() -> str:
 | `app/backend/wiki_service.py` | Wiki 检索服务 |
 | `app/backend/raw_service.py` | Raw 检索服务 |
 | `docs/client-architecture.md` | 客户端架构设计 |
+| `docs/pi-sdk-bridge-architecture.md` | Pi bridge 专项架构文档 |
 
 ---
 
@@ -271,3 +275,8 @@ def _build_pi_system_prompt() -> str:
 | 2026-04-13 | 初始版本 |
 | 2026-04-13 | 更新检索优先级为个人知识库优先（limit 6+4） |
 | 2026-04-13 | 优化系统提示词：指引 Agent 阅读 AGENTS.md，设定热情耐心风格，移除 read-only 限制 |
+| 2026-04-13 | 添加 Session 池支持说明，链接到 session-management.md |
+| 2026-04-13 | 添加 `_default_suggested_prompts()` 函数记录 |
+| 2026-04-13 | 更新"与架构的差距"表，明确双层检索和贡献建议待实现 |
+| 2026-04-13 | 抽离 Pi bridge 细节到独立文档，主文档保留摘要与链接 |
+| 2026-04-14 | 增加 request_id 透传说明，更新 Session 池函数签名 |
