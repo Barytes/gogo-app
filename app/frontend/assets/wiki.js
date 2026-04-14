@@ -5,6 +5,8 @@ const categoryEl = document.querySelector("#wiki-category");
 const contentEl = document.querySelector("#wiki-content");
 const quoteIntoChatEl = document.querySelector("#quote-into-chat");
 const openSourceFileEl = document.querySelector("#open-source-file");
+const historyBackEl = document.querySelector("#wiki-history-back");
+const historyForwardEl = document.querySelector("#wiki-history-forward");
 const modeWikiEl = document.querySelector("#mode-wiki");
 const modeRawEl = document.querySelector("#mode-raw");
 
@@ -12,6 +14,8 @@ let allPages = [];
 let activePath = "";
 let activePage = null;
 let activeMode = "wiki";
+const wikiBackHistory = [];
+const wikiForwardHistory = [];
 
 function escapeHtml(value) {
   return value
@@ -49,6 +53,32 @@ function normalizePathSegments(segments) {
     normalized.push(part);
   });
   return normalized;
+}
+
+function getCurrentLocation() {
+  if (!activePath) {
+    return null;
+  }
+  return {
+    path: activePath,
+    source: activeMode,
+  };
+}
+
+function isSameLocation(left, right) {
+  if (!left || !right) {
+    return false;
+  }
+  return left.path === right.path && left.source === right.source;
+}
+
+function updateWikiHistoryButtons() {
+  if (historyBackEl) {
+    historyBackEl.disabled = wikiBackHistory.length === 0;
+  }
+  if (historyForwardEl) {
+    historyForwardEl.disabled = wikiForwardHistory.length === 0;
+  }
 }
 
 function resolveWorkbenchTarget(href, currentPath = "", currentSource = "wiki") {
@@ -286,8 +316,8 @@ function renderList(pages) {
           button.classList.add("active");
         }
         button.innerHTML = `<strong>${page.title}</strong><small>${page.summary}</small>`;
-        button.addEventListener("click", () => {
-          loadPage(page.path);
+        button.addEventListener("click", async () => {
+          await navigateToPage(page.path, activeMode, { recordHistory: true });
         });
         li.appendChild(button);
         ul.appendChild(li);
@@ -315,6 +345,17 @@ function currentListEndpoint(query = "") {
     : "/api/wiki/pages";
 }
 
+function listEndpointForMode(mode, query = "") {
+  if (mode === "raw") {
+    return query
+      ? `/api/raw/search?q=${encodeURIComponent(query)}`
+      : "/api/raw/files";
+  }
+  return query
+    ? `/api/wiki/search?q=${encodeURIComponent(query)}`
+    : "/api/wiki/pages";
+}
+
 function currentDetailEndpoint(path) {
   return activeMode === "raw"
     ? `/api/raw/file?path=${encodeURIComponent(path)}`
@@ -323,6 +364,13 @@ function currentDetailEndpoint(path) {
 
 async function fetchPages(query = "") {
   const url = currentListEndpoint(query);
+  const response = await fetch(url);
+  const data = await response.json();
+  return data.items || [];
+}
+
+async function fetchPagesForMode(mode, query = "") {
+  const url = listEndpointForMode(mode, query);
   const response = await fetch(url);
   const data = await response.json();
   return data.items || [];
@@ -400,6 +448,59 @@ async function loadPage(path) {
   window.history.replaceState({}, "", `/${params.toString() ? `?${params.toString()}` : ""}`);
 }
 
+async function navigateToPage(path, source = "wiki", options = {}) {
+  const { recordHistory = false, historyDirection = null } = options;
+  const currentLocation = getCurrentLocation();
+  const targetLocation = { path, source };
+  const previousMode = activeMode;
+  const previousPages = allPages;
+  const previousSearch = searchEl?.value || "";
+
+  try {
+    if (source !== activeMode) {
+      setMode(source);
+      if (searchEl) {
+        searchEl.value = "";
+      }
+      allPages = await fetchPages();
+    }
+    renderList(allPages);
+    await loadPage(path);
+  } catch (error) {
+    if (source !== previousMode) {
+      setMode(previousMode);
+      allPages = previousPages;
+      if (searchEl) {
+        searchEl.value = previousSearch;
+      }
+      renderList(allPages);
+    }
+    categoryEl.textContent = `${source} / unavailable / ${path}`;
+    titleEl.textContent = "暂时无法读取内容";
+    contentEl.innerHTML = `<p class="empty-state">${escapeHtml(String(error?.message || "跳转失败。"))}</p>`;
+    updateWikiHistoryButtons();
+    return false;
+  }
+
+  if (historyDirection === "back") {
+    if (currentLocation && !isSameLocation(currentLocation, targetLocation)) {
+      wikiForwardHistory.push(currentLocation);
+    }
+  } else if (historyDirection === "forward") {
+    if (currentLocation && !isSameLocation(currentLocation, targetLocation)) {
+      wikiBackHistory.push(currentLocation);
+    }
+  } else if (recordHistory) {
+    if (currentLocation && !isSameLocation(currentLocation, targetLocation)) {
+      wikiBackHistory.push(currentLocation);
+      wikiForwardHistory.length = 0;
+    }
+  }
+
+  updateWikiHistoryButtons();
+  return true;
+}
+
 async function bootstrap() {
   try {
     const params = new URLSearchParams(window.location.search);
@@ -411,7 +512,7 @@ async function bootstrap() {
     renderList(allPages);
 
     const initialPath = initialRaw || initialPage || (activeMode === "raw" ? allPages[0]?.path : "index.md");
-    await loadPage(initialPath);
+    await navigateToPage(initialPath, activeMode, { recordHistory: false });
   } catch (error) {
     categoryEl.textContent = "unavailable";
     titleEl.textContent = "暂时无法读取内容";
@@ -429,23 +530,16 @@ modeWikiEl?.addEventListener("click", async () => {
   if (activeMode === "wiki") {
     return;
   }
-  setMode("wiki");
-  searchEl.value = "";
-  allPages = await fetchPages();
-  renderList(allPages);
-  await loadPage("index.md");
+  await navigateToPage("index.md", "wiki", { recordHistory: true });
 });
 
 modeRawEl?.addEventListener("click", async () => {
   if (activeMode === "raw") {
     return;
   }
-  setMode("raw");
-  searchEl.value = "";
-  allPages = await fetchPages();
-  renderList(allPages);
-  if (allPages.length) {
-    await loadPage(allPages[0].path);
+  const rawPages = await fetchPagesForMode("raw");
+  if (rawPages.length) {
+    await navigateToPage(rawPages[0].path, "raw", { recordHistory: true });
   }
 });
 
@@ -475,20 +569,7 @@ if (quoteIntoChatEl) {
 window.WikiWorkbench = {
   openPage: async (path, source = "wiki") => {
     window.WorkbenchUI?.ensureWikiVisible?.();
-    try {
-      if (source !== activeMode) {
-        setMode(source);
-        searchEl.value = "";
-        allPages = await fetchPages();
-      }
-      renderList(allPages);
-      await loadPage(path);
-    } catch (error) {
-      categoryEl.textContent = `${source} / unavailable / ${path}`;
-      titleEl.textContent = "暂时无法读取内容";
-      contentEl.innerHTML = `<p class="empty-state">${escapeHtml(String(error?.message || "跳转失败。"))}</p>`;
-      throw error;
-    }
+    return navigateToPage(path, source, { recordHistory: true });
   },
   showSidebar: () => {
     const sidebarEl = document.querySelector(".wiki-sidebar");
@@ -546,4 +627,35 @@ hideWikiPanelChatBtn?.addEventListener("click", () => {
   window.WorkbenchUI?.hideWiki?.();
 });
 
+historyBackEl?.addEventListener("click", async () => {
+  const destination = wikiBackHistory.pop();
+  if (!destination) {
+    updateWikiHistoryButtons();
+    return;
+  }
+  const succeeded = await navigateToPage(destination.path, destination.source, {
+    historyDirection: "back",
+  });
+  if (!succeeded) {
+    wikiBackHistory.push(destination);
+  }
+  updateWikiHistoryButtons();
+});
+
+historyForwardEl?.addEventListener("click", async () => {
+  const destination = wikiForwardHistory.pop();
+  if (!destination) {
+    updateWikiHistoryButtons();
+    return;
+  }
+  const succeeded = await navigateToPage(destination.path, destination.source, {
+    historyDirection: "forward",
+  });
+  if (!succeeded) {
+    wikiForwardHistory.push(destination);
+  }
+  updateWikiHistoryButtons();
+});
+
+updateWikiHistoryButtons();
 bootstrap();

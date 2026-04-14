@@ -350,6 +350,19 @@ def get_session_history(
     }
 
 
+@app.post("/api/sessions/{session_id}/abort")
+def abort_session_response(session_id: str) -> dict[str, object]:
+    """终止指定会话当前进行中的回复"""
+    pool = get_session_pool()
+    result = pool.abort_pending_request(session_id)
+    if not result.get("success"):
+        detail = str(result.get("detail") or "Abort failed.")
+        if detail.startswith("Session not found:"):
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=409, detail=detail)
+    return result
+
+
 @app.post("/api/sessions/{session_id}/chat/stream")
 async def session_chat_stream(session_id: str, request: ChatRequest) -> StreamingResponse:
     """会话流式聊天"""

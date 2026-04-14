@@ -88,6 +88,9 @@ class SessionProcess:
     thinking_level: str = "medium"
     info: SessionInfo = field(default_factory=lambda: SessionInfo(session_id=""))
     lock: threading.Lock = field(default_factory=threading.Lock)
+    abort_requested: bool = False
+    active_rpc_client: PiRpcClient | None = None
+    active_loop: asyncio.AbstractEventLoop | None = None
 
     def __post_init__(self) -> None:
         self.info.session_id = self.session_id
@@ -460,6 +463,60 @@ class SessionPool:
             }
         return None
 
+    def _user_aborted_terminal_event(
+        self,
+        *,
+        session: SessionProcess,
+        trace: list[dict[str, Any]],
+        streamed_text_chunks: list[str],
+    ) -> dict[str, Any]:
+        partial_text = "".join(streamed_text_chunks).strip()
+        return {
+            "type": "final",
+            "message": partial_text or "已停止回复。",
+            "warnings": [],
+            "trace": trace,
+            "history_length": session.info.message_count + 1,
+            "stopped": True,
+        }
+
+    def abort_pending_request(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "detail": f"Session not found: {session_id}",
+                }
+            if not session.info.pending_request_id:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "detail": "当前会话没有进行中的回复。",
+                }
+
+            session.abort_requested = True
+            request_id = session.info.pending_request_id
+            rpc_client = session.active_rpc_client
+            active_loop = session.active_loop
+
+        if rpc_client is not None and active_loop is not None and active_loop.is_running():
+            def schedule_abort() -> None:
+                asyncio.create_task(
+                    rpc_client.abort(
+                        request_id=f"{request_id}:user_abort" if request_id else None
+                    )
+                )
+
+            active_loop.call_soon_threadsafe(schedule_abort)
+
+        return {
+            "success": True,
+            "session_id": session_id,
+            "detail": "已请求终止当前回复。",
+        }
+
     async def _stream_rpc_request(
         self,
         *,
@@ -475,6 +532,9 @@ class SessionPool:
             }
             return
 
+        session.abort_requested = False
+        session.active_rpc_client = None
+        session.active_loop = asyncio.get_running_loop()
         session.info.pending_request_id = request_id or f"pending-{uuid.uuid4()}"
         session.info.last_used_at = time.time()
         self._sync_registry_from_session(session)
@@ -500,6 +560,7 @@ class SessionPool:
                 extra_args=["--session-dir", str(get_pi_rpc_session_dir())],
             ) as rpc_client:
                 client = rpc_client
+                session.active_rpc_client = rpc_client
                 switch_result = await rpc_client.switch_session(
                     session_path=session.session_file,
                     request_id=f"{request_id}:switch" if request_id else None,
@@ -543,6 +604,13 @@ class SessionPool:
                                 yield {"type": "thinking_delta", "delta": delta}
                             continue
                         if assistant_event_type == "error":
+                            if session.abort_requested:
+                                yield self._user_aborted_terminal_event(
+                                    session=session,
+                                    trace=trace,
+                                    streamed_text_chunks=streamed_text_chunks,
+                                )
+                                return
                             reason = str(assistant_event.get("reason") or "error")
                             yield {
                                 "type": "error",
@@ -586,6 +654,13 @@ class SessionPool:
                 "trace": trace,
             }
         except PiRpcError as exc:
+            if session.abort_requested:
+                yield self._user_aborted_terminal_event(
+                    session=session,
+                    trace=trace,
+                    streamed_text_chunks=streamed_text_chunks,
+                )
+                return
             yield {
                 "type": "error",
                 "message": f"Pi RPC 调用失败：{exc}",
@@ -593,6 +668,13 @@ class SessionPool:
                 "trace": trace,
             }
         except Exception as exc:
+            if session.abort_requested:
+                yield self._user_aborted_terminal_event(
+                    session=session,
+                    trace=trace,
+                    streamed_text_chunks=streamed_text_chunks,
+                )
+                return
             yield {
                 "type": "error",
                 "message": f"Pi RPC 未能完成请求：{exc}",
@@ -600,6 +682,9 @@ class SessionPool:
                 "trace": trace,
             }
         finally:
+            session.abort_requested = False
+            session.active_rpc_client = None
+            session.active_loop = None
             session.info.pending_request_id = None
             session.info.last_used_at = time.time()
             session.info.message_count += 1

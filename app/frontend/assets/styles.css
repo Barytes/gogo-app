@@ -941,6 +941,16 @@ body.session-sidebar-collapsed .session-sidebar-top {
   box-shadow: 0 14px 26px rgba(24, 92, 82, 0.22);
 }
 
+.chat-submit-button[data-mode="stop"] {
+  background: #b1532f;
+  box-shadow: 0 10px 22px rgba(177, 83, 47, 0.24);
+}
+
+.chat-submit-button[data-mode="stop"]:hover {
+  background: #934425;
+  box-shadow: 0 14px 26px rgba(177, 83, 47, 0.28);
+}
+
 .chat-submit-button:disabled {
   cursor: not-allowed;
   opacity: 0.58;
@@ -1096,6 +1106,20 @@ body.session-sidebar-collapsed .session-sidebar-top {
   flex-wrap: wrap;
   justify-content: flex-end;
   flex-shrink: 0;
+}
+
+.wiki-history-button {
+  min-width: 52px;
+  padding-inline: 0;
+  justify-content: center;
+  font-size: 1.1rem;
+  line-height: 1;
+}
+
+.wiki-history-button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+  transform: none;
 }
 
 .wiki-content {

@@ -2,12 +2,13 @@ const messagesEl = document.querySelector("#messages");
 const formEl = document.querySelector("#chat-form");
 const inputEl = document.querySelector("#chat-input");
 const submitButtonEl = formEl?.querySelector("button[type='submit']");
+const submitIconEl = submitButtonEl?.querySelector(".chat-submit-icon");
 const sessionListEl = document.querySelector("#session-list");
 const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
-const CHAT_UI_VERSION = "2026-04-14.10";
+const CHAT_UI_VERSION = "2026-04-14.13";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -34,6 +35,7 @@ let history = draftHistory; // 当前会话的历史（始终指向当前 sessio
 let currentStreamingMessage = null; // 跟踪正在流式接收的 AI 消息
 let currentStreamingSessionId = null; // 当前流式消息所属的 session
 const pendingSessionIds = new Set(); // 记录仍在等待回复的 session
+const abortingSessionIds = new Set(); // 记录正在发送终止请求的 session
 const hydratedSessionIds = new Set(); // 已从后端事件存储回放过的 session
 const LAST_ACTIVE_SESSION_KEY = "gogo:last-active-session-id";
 let shouldAutoScrollMessages = true;
@@ -478,16 +480,49 @@ function injectPrompt(text, replace = false) {
 }
 
 function setChatPending(isPending) {
-  if (inputEl) {
-    inputEl.disabled = isPending;
-  }
+  void isPending;
+  const isPendingForCurrent = Boolean(currentSessionId && pendingSessionIds.has(currentSessionId));
+  const isAbortingCurrent = Boolean(currentSessionId && abortingSessionIds.has(currentSessionId));
+  const hasDraft = Boolean(inputEl?.value.trim());
+
   if (submitButtonEl) {
-    submitButtonEl.disabled = isPending;
+    submitButtonEl.dataset.mode = isPendingForCurrent ? "stop" : "send";
+    submitButtonEl.disabled = isPendingForCurrent ? isAbortingCurrent : !hasDraft;
+    submitButtonEl.setAttribute("aria-label", isPendingForCurrent ? "终止" : "发送");
+    submitButtonEl.title = isPendingForCurrent ? "终止当前回复" : "发送消息";
+  }
+
+  if (submitIconEl) {
+    submitIconEl.textContent = isPendingForCurrent ? "■" : "↑";
   }
 }
 
 function refreshChatPendingState() {
   setChatPending(Boolean(currentSessionId && pendingSessionIds.has(currentSessionId)));
+}
+
+async function abortCurrentReply() {
+  const sessionId = currentSessionId;
+  if (!sessionId || !pendingSessionIds.has(sessionId) || abortingSessionIds.has(sessionId)) {
+    return;
+  }
+
+  abortingSessionIds.add(sessionId);
+  refreshChatPendingState();
+
+  try {
+    const safeSessionId = encodeURIComponent(sessionId);
+    const response = await fetch(`/api/sessions/${safeSessionId}/abort`, {
+      method: "POST",
+    });
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+  } catch (error) {
+    abortingSessionIds.delete(sessionId);
+    refreshChatPendingState();
+    appendMessage("assistant", `终止回复失败：${error.message}`);
+  }
 }
 
 window.ChatWorkbench = {
@@ -1550,6 +1585,7 @@ async function sendMessage(message) {
       currentStreamingSessionId = null;
     }
   } finally {
+    abortingSessionIds.delete(requestSessionId);
     pendingSessionIds.delete(requestSessionId);
     refreshChatPendingState();
     renderSessionList();
@@ -1557,7 +1593,10 @@ async function sendMessage(message) {
 }
 
 async function submitCurrentMessage() {
-  if (inputEl?.disabled || submitButtonEl?.disabled) {
+  if (currentSessionId && pendingSessionIds.has(currentSessionId)) {
+    return;
+  }
+  if (submitButtonEl?.disabled) {
     return;
   }
   const message = inputEl?.value.trim();
@@ -1571,10 +1610,17 @@ async function submitCurrentMessage() {
 
 formEl?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  if (currentSessionId && pendingSessionIds.has(currentSessionId)) {
+    await abortCurrentReply();
+    return;
+  }
   await submitCurrentMessage();
 });
 
 inputEl?.addEventListener("keydown", async (event) => {
+  if (currentSessionId && pendingSessionIds.has(currentSessionId)) {
+    return;
+  }
   if (
     event.key !== "Enter" ||
     event.shiftKey ||
@@ -1587,6 +1633,10 @@ inputEl?.addEventListener("keydown", async (event) => {
   }
   event.preventDefault();
   await submitCurrentMessage();
+});
+
+inputEl?.addEventListener("input", () => {
+  refreshChatPendingState();
 });
 
 newSessionButtonEl?.addEventListener("click", () => {
