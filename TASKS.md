@@ -128,34 +128,11 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
     - [x] 下线 `pi_sdk_bridge.mjs` 主调用路径
     - [x] 下线 `session_event_store/replay_history` 主路径并删除旧实现
     - [x] 清理遗留配置与死代码，更新相关文档
-    - [x] 验收：默认链路不依赖 `.gogo-sessions` 主存储，关键场景回归通过
+    - [x] 验收：默认链路不依赖旧事件主存储，关键场景回归通过
 
-- [ ] **0.3 添加写回功能**
-  - [ ] 创建 `app/backend/write_service.py`
-  - [ ] 实现 `create_wiki_page()` 和 `create_insight_page()` 函数
-  - [ ] 遵循 `schemas/ingest.md` 和 `schemas/insight.md` 格式
-  - [ ] 自动维护 frontmatter（作者、时间、来源）
-  - [ ] 追加日志到 `wiki/log.md`
-  - [ ] 新增 `POST /api/write/wiki` 和 `POST /api/write/insight` 路由
+- `0.3`（gogo-app 内置写回）已移除：写回能力与约束规范统一放在 `knowledge-base` 侧，由用户所选 coding agent 执行。
 
-- [ ] **0.4 设计 Tool 系统**（Skill 系统的基础）
-  - [ ] 定义 Tool 接口规范（输入、输出、错误处理）
-  - [ ] 实现基础 Tool 注册机制
-  - [ ] 实现文件读取 Tool（已存在，需封装）
-  - [ ] 实现文件写入 Tool（配合写回功能）
-  - [ ] 实现搜索 Tool（封装 wiki/raw search）
-  - [ ] 支持用户扩展自定义 Tool
-  - [ ] 更新 RPC 链路的 Tool 注册与调用（不依赖 `pi_sdk_bridge.mjs`）
-
-- [ ] **0.5 设计 Skill 系统**（在 Tool 之上编排任务流程）
-  - [ ] 定义 Skill 接口规范
-  - [ ] 实现 `ingest` Skill（材料摄取）— 编排 read/classify/write Tool
-  - [ ] 实现 `query` Skill（本地查询）— 编排 search/read/answer Tool
-  - [ ] 实现 `lint` Skill（清理检查）— 编排 scan/report Tool
-  - [ ] 支持用户扩展自定义 Skill
-  - [ ] 更新 RPC 链路支持 Skill 调用
-
-- [ ] **0.6 支持 Model Provider 配置**
+- [ ] **0.4 支持 Model Provider 配置**
   - [ ] **能力边界（RPC 模式）**
     - [ ] 明确：RPC mode 不支持“运行时动态新增 provider”
     - [ ] RPC mode 仅支持对“已配置模型”做运行时操作：`set_model` / `cycle_model` / `get_available_models`
@@ -173,13 +150,13 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
     - [ ] 对未预配置 provider/model，后端返回明确错误提示（指导去改 `models.json` 或安装 extension）
     - [ ] 对已配置模型，可在 RPC 会话中稳定切换并生效
 
-- [ ] **0.7 疑点：`_build_pi_prompt` 中的 history 处理**
+- [ ] **0.5 疑点：`_build_pi_prompt` 中的 history 处理**
   - [ ] **问题**：当前 `_build_pi_prompt()` 手动将最近 6 轮 history 附加到 prompt 中（`agent_service.py:54-59`）
   - [ ] **疑点**：RPC 会话链路已维护原生会话上下文，是否仍应在 prompt 层拼接最近 history？
   - [ ] **待确认**：是否可以移除手动 history 注入，改为依赖 RPC 会话自身历史（仅保留无 session 的兜底策略）？
   - [ ] **相关代码**：`session_manager.py` 的 `send_message()` / `send_message_async()` 当前已不使用 `history` 参数（`del history`）
 
-- [ ] **0.8 移除固定检索和 consulted_pages 注入**
+- [ ] **0.6 移除固定检索和 consulted_pages 注入**
   - [ ] **当前设计**：
     ```python
     # agent_service.py: _prepare_rpc_request()
@@ -229,34 +206,11 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] `_collect_context()` 实现双层检索逻辑
   - [ ] `_build_pi_system_prompt()` 增加来源优先级指导
 
-#### 2. 知识写回功能
-
-当前代码明确标注"read-only"，不支持写回。
-
-- [ ] **2.1 Write Service**
-  - [ ] 创建 `app/backend/write_service.py`
-  - [ ] 实现 `create_wiki_page()` 函数
-  - [ ] 实现 `create_insight_page()` 函数
-  - [ ] 实现 `update_page_with_links()` 函数
-  - [ ] 遵循 `schemas/ingest.md` 和 `schemas/insight.md` 格式
-  - [ ] 自动维护 frontmatter（作者、时间、来源）
-  - [ ] 追加日志到 `wiki/log.md`
-
-- [ ] **2.2 Write API**
-  - [ ] 新增 `POST /api/write/wiki` 路由
-  - [ ] 新增 `POST /api/write/insight` 路由
-  - [ ] 请求体包含页面内容、作者、来源等元数据
-
-- [ ] **2.3 写回 UI**
-  - [ ] Chat 消息增加"保存到知识库"按钮
-  - [ ] 写回表单（选择路径、类型、标签）
-  - [ ] 写回确认和反馈
-
-#### 3. Git 同步功能
+#### 2. Git 同步功能
 
 当前代码没有 Git 操作能力。
 
-- [ ] **3.1 Git Sync Service**
+- [ ] **2.1 Git Sync Service**
   - [ ] 创建 `app/backend/git_sync_service.py`
   - [ ] 实现 `get_sync_status()` 函数
   - [ ] 实现 `pull_public_pool()` 函数
@@ -265,37 +219,37 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
   - [ ] 实现 `mark_for_contribution()` 函数
   - [ ] 管理 public-pool git submodule
 
-- [ ] **3.2 Sync API**
+- [ ] **2.2 Sync API**
   - [ ] 新增 `GET /api/sync/status` 路由
   - [ ] 新增 `POST /api/sync/pull` 路由
   - [ ] 新增 `POST /api/sync/push` 路由
   - [ ] 新增 `GET /api/sync/contributions` 路由
 
-- [ ] **3.3 Sync UI**
+- [ ] **2.3 Sync UI**
   - [ ] 创建 `app/frontend/assets/sync.js`
   - [ ] Sync 状态栏（最后同步时间、待 push 数量）
   - [ ] 一键 sync 按钮
   - [ ] 贡献队列面板
   - [ ] 页面来源标注（public vs personal）
 
-- [ ] **3.4 配置 UI**
+- [ ] **2.4 配置 UI**
   - [ ] 新增 `GET /api/config` 路由
   - [ ] 新增 `PUT /api/config` 路由
   - [ ] 配置编辑界面
 
-#### 4. 贡献标记功能
+#### 3. 贡献标记功能
 
-- [ ] **4.1 贡献标记逻辑**
+- [ ] **3.1 贡献标记逻辑**
   - [ ] `agent_service.py` 实现 `should_suggest_contribution()`
   - [ ] `agent_service.py` 实现 `mark_for_contribution()`
-  - [ ] 写回时自动/手动标记为可贡献
+  - [ ] 内容提交时自动/手动标记为可贡献
 
-- [ ] **4.2 贡献队列 UI**
+- [ ] **3.2 贡献队列 UI**
   - [ ] 列出待贡献页面
   - [ ] 选择要 push 的页面
   - [ ] 显示 push 历史
 
-#### 5. 服务器端聚合脚本（独立仓库）
+#### 4. 服务器端聚合脚本（独立仓库）
 
 服务器端功能在单独的仓库中实现。
 
@@ -326,6 +280,27 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 
 ---
 
+#### Backlog（后置需求）
+
+- [ ] **0.4 设计 Tool 系统**（Skill 系统的基础，后置）
+  - [ ] 定义 Tool 接口规范（输入、输出、错误处理）
+  - [ ] 实现基础 Tool 注册机制
+  - [ ] 实现文件读取 Tool（已存在，需封装）
+  - [ ] 实现文件写入 Tool（配合写回功能）
+  - [ ] 实现搜索 Tool（封装 wiki/raw search）
+  - [ ] 支持用户扩展自定义 Tool
+  - [ ] 更新 RPC 链路的 Tool 注册与调用（不依赖 `pi_sdk_bridge.mjs`）
+
+- [ ] **0.5 设计 Skill 系统**（在 Tool 之上编排任务流程，后置）
+  - [ ] 定义 Skill 接口规范
+  - [ ] 实现 `ingest` Skill（材料摄取）— 编排 read/classify/write Tool
+  - [ ] 实现 `query` Skill（本地查询）— 编排 search/read/answer Tool
+  - [ ] 实现 `lint` Skill（清理检查）— 编排 scan/report Tool
+  - [ ] 支持用户扩展自定义 Skill
+  - [ ] 更新 RPC 链路支持 Skill 调用
+
+---
+
 ## 任务优先级
 
 | 优先级 | 功能 | 说明 |
@@ -333,7 +308,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 | P0 | 0. 检查并优化 Agent 服务 | Agent 是核心引擎，优先优化 |
 | P0 | 0.2 Session 多会话管理 | 改善用户体验，支持多对话并行 |
 | P0 | 双层知识库支持 | 联邦架构的基础 |
-| P0 | 知识写回功能 | 核心价值"沉淀复利"的关键 |
+| P0 | knowledge-base 写回规范 | 核心价值"沉淀复利"的关键（由 knowledge-base 侧承载） |
 | P1 | Git 同步功能 | 联邦架构的同步机制 |
 | P1 | 贡献标记功能 | 降低贡献摩擦 |
 | P2 | 服务器端聚合 | 可手动执行，自动化可延后 |
@@ -360,4 +335,7 @@ TASKS.md (任务列表 - 描述代码与架构的差距)
 | 2026-04-14 | 执行完成 F3 里程碑 | `session_manager.py` 切到 RPC 会话命令（new/switch/set_name/get_state）并实现会话单飞互斥 |
 | 2026-04-14 | 执行完成 F4 里程碑 | `/api/sessions/{id}/history` 优先走 RPC `get_messages`，并支持 Pi 原生 JSONL 离线恢复与重启后会话恢复 |
 | 2026-04-14 | 执行完成 F5 里程碑 | 删除 `pi_sdk_bridge.mjs` 与 `session_event_store.py`，Session 体系收敛到 RPC-only |
+| 2026-04-14 | 合并任务 2 到 0.3 | 原任务 2「知识写回功能」合并到任务 0.3，写回功能成为 Agent 优化的一部分 |
 | 2026-04-14 | 更新 0.6 Model Provider 约束 | 明确 RPC 仅支持模型选择，不支持运行时新增 provider；补充 `models.json` / `registerProvider()` 两种配置路径 |
+| 2026-04-14 | 下调 0.4/0.5 优先级 | Tool/Skill 设计移至 Backlog（后置需求） |
+| 2026-04-14 | 移除 gogo-app 内置 0.3 写回任务 | 写回规范与能力归属 knowledge-base，由用户所选 coding agent 执行 |

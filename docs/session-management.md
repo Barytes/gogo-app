@@ -100,7 +100,7 @@ Session 主链路已收敛为 **RPC-only**：
 1. 在线优先：RPC `get_messages`
 2. 离线兜底：直接解析 Pi 原生 session JSONL
 
-因此默认运行不依赖 `.gogo-sessions` 作为主历史源。
+因此默认运行不依赖旧事件存储目录作为主历史源。
 
 ---
 

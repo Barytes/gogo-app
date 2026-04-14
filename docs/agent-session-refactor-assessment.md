@@ -215,7 +215,7 @@ FastAPI
 
 1. `agent_service.py` 下线 legacy bridge 主分支，单次聊天固定走 RPC 执行器。
 2. `session_manager.py` 收敛为 RPC-only 会话管理；`session_event_store.py` 已删除。
-3. 历史恢复默认不依赖 `.gogo-sessions`，主数据源为 Pi 原生会话（在线 `get_messages` + 离线 JSONL）。
+3. 历史恢复默认不依赖旧事件目录，主数据源为 Pi 原生会话（在线 `get_messages` + 离线 JSONL）。
 4. 文档与任务同步更新，F1-F5 全部闭环。
 
 实现步骤：
@@ -282,7 +282,7 @@ FastAPI
 可测试结果：
 
 - 复现你之前报告的切会话/超时问题场景，行为稳定且可重复通过。
-- 默认运行时不再依赖 `.gogo-sessions` 作为主会话数据源。
+- 默认运行时不再依赖旧事件目录作为主会话数据源。
 
 ---
 
