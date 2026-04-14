@@ -8,10 +8,12 @@ const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
-const CHAT_UI_VERSION = "2026-04-14.13";
+const CHAT_UI_VERSION = "2026-04-14.17";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const BARE_WIKI_PATH_PATTERN =
+  /(^|[\s(>（【「『"'“”‘’,，。；：;:、])(wiki\/.+?\.md)(?=$|[\s)<\]】」』"'“”‘’,，。；：;:、!?！？])/g;
 
 console.log("Chat elements:", {
   version: CHAT_UI_VERSION,
@@ -171,13 +173,54 @@ function escapeHtml(value) {
     .replaceAll(">", "&gt;");
 }
 
+function stashHtmlFragment(store, html) {
+  const token = `%%GOGO_HTML_${store.length}%%`;
+  store.push({ token, html });
+  return token;
+}
+
+function restoreHtmlFragments(text, store) {
+  return store.reduce((result, fragment) => result.replaceAll(fragment.token, fragment.html), text);
+}
+
+function buildInlineWikiAnchor(label, href, { codeStyle = false } = {}) {
+  const safeLabel = escapeHtml(label);
+  const content = codeStyle ? `<code>${safeLabel}</code>` : safeLabel;
+  const className = codeStyle ? ' class="inline-wiki-path"' : "";
+  return `<a${className} href="${href}" target="_blank" rel="noreferrer">${content}</a>`;
+}
+
 function renderInlineMarkdown(text) {
+  const fragments = [];
   let rendered = escapeHtml(text);
-  rendered = rendered.replace(/`([^`]+)`/g, "<code>$1</code>");
+  rendered = rendered.replace(
+    /`([^`]+)`/g,
+    (_match, code) => {
+      const destination = resolveWikiLinkTarget(code);
+      if (destination) {
+        return stashHtmlFragment(
+          fragments,
+          buildInlineWikiAnchor(code, `/${destination.source}/${destination.path}`, { codeStyle: true })
+        );
+      }
+      return stashHtmlFragment(fragments, `<code>${code}</code>`);
+    }
+  );
+  rendered = rendered.replace(
+    /\[([^\]]+)\]\(([^)]+)\)/g,
+    (_match, label, href) => stashHtmlFragment(
+      fragments,
+      `<a href="${href}" target="_blank" rel="noreferrer">${label}</a>`
+    )
+  );
   rendered = rendered.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
   rendered = rendered.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noreferrer">$1</a>');
-  return rendered;
+  rendered = rendered.replace(
+    BARE_WIKI_PATH_PATTERN,
+    (_match, prefix, wikiPath) =>
+      `${prefix}${buildInlineWikiAnchor(wikiPath, `/${wikiPath}`)}`
+  );
+  return restoreHtmlFragments(rendered, fragments);
 }
 
 function markdownToHtml(markdown) {
@@ -499,6 +542,15 @@ function setChatPending(isPending) {
 
 function refreshChatPendingState() {
   setChatPending(Boolean(currentSessionId && pendingSessionIds.has(currentSessionId)));
+}
+
+function collapseSessionSidebarForWikiLayout() {
+  const layout = window.WorkbenchUI?.getState?.().layout;
+  if (layout !== "wiki" || document.body.classList.contains("session-sidebar-collapsed")) {
+    return;
+  }
+  applySessionSidebarState(true);
+  saveSessionSidebarState(true);
 }
 
 async function abortCurrentReply() {
@@ -1208,6 +1260,7 @@ function renderSessionList() {
     mainButton.addEventListener("click", async () => {
       openSessionMenuId = null;
       await switchToSession(sid);
+      collapseSessionSidebarForWikiLayout();
     });
 
     const menuButton = document.createElement("button");

@@ -21,6 +21,7 @@
 - [agent-architecture.md](agent-architecture.md) - 当前 Agent 后端实现（RPC-only）
 - [session-management.md](session-management.md) - Session 管理与恢复机制
 - [agent-session-refactor-assessment.md](agent-session-refactor-assessment.md) - Agent/Session 重构评估与里程碑
+- [frontend-workbench-elements.md](frontend-workbench-elements.md) - 前端工作台页面元素、状态与交互实现说明
 
 ## 规范与映射
 

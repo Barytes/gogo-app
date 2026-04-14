@@ -663,6 +663,15 @@ body.layout-chat .unified-chat-panel {
   text-underline-offset: 0.18em;
 }
 
+.message-body a.inline-wiki-path {
+  text-decoration: none;
+}
+
+.message-body a.inline-wiki-path code {
+  color: inherit;
+  cursor: pointer;
+}
+
 .message-user {
   align-self: flex-end;
   background: linear-gradient(135deg, rgba(24, 92, 82, 0.16), rgba(24, 92, 82, 0.08));
@@ -1090,6 +1099,7 @@ body.session-sidebar-collapsed .session-sidebar-top {
 }
 
 .wiki-meta > div:first-child {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
 }
@@ -1364,6 +1374,36 @@ body.layout-chat .workbench-wiki .wiki-content-panel {
   flex: 1;
   min-height: 0;
   overflow: auto;
+}
+
+body.layout-chat .wiki-meta {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px 18px;
+  align-items: start;
+}
+
+body.layout-chat .wiki-meta > div:first-child {
+  display: contents;
+}
+
+body.layout-chat #wiki-category {
+  grid-column: 1;
+  grid-row: 1;
+}
+
+body.layout-chat .detail-actions {
+  grid-column: 2;
+  grid-row: 1;
+  align-self: start;
+}
+
+body.layout-chat #wiki-title {
+  grid-column: 1 / -1;
+  grid-row: 2;
+  white-space: normal;
+  text-overflow: clip;
+  overflow-wrap: anywhere;
 }
 
 body.layout-chat .workbench-wiki .wiki-list {
