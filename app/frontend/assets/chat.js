@@ -8,7 +8,7 @@ const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
-const CHAT_UI_VERSION = "2026-04-14.17";
+const CHAT_UI_VERSION = "2026-04-14.18";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -1558,7 +1558,6 @@ async function sendMessage(message) {
       },
       body: JSON.stringify({
         message,
-        history: requestHistory,
         session_id: requestSessionId,
         request_id: requestId,
       }),

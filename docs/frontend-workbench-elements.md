@@ -224,6 +224,7 @@
 - 联动：
   - `wiki:quote` 会向这里注入引用提示
   - `focusChatInput()` 会自动把 Chat 面板显出来并聚焦
+  - 当前前端发送前会先懒创建 session，因此不会直接走无 session 单次聊天入口
 
 ### 5.9 `button[type="submit"]` / `.chat-submit-button`
 
@@ -351,7 +352,7 @@
 2. `chat.js -> sendMessage()`
 3. 若当前还没有 session，则先创建 session
 4. 前端创建一个流式助手消息占位
-5. `/api/chat/stream` 按 NDJSON 持续返回：
+5. `POST /api/chat/stream`（session-only）按 NDJSON 持续返回：
    - `context`
    - `trace`
    - `thinking_delta`

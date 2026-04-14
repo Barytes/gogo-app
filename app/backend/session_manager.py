@@ -695,11 +695,9 @@ class SessionPool:
         self,
         session_id: str,
         message: str,
-        history: list[dict[str, str]] | None = None,
         stream: bool = True,
         request_id: str | None = None,
     ) -> dict[str, Any] | None:
-        del history
         session = self.get_session(session_id)
         if not session:
             return None
@@ -736,10 +734,8 @@ class SessionPool:
         self,
         session_id: str,
         message: str,
-        history: list[dict[str, str]] | None = None,
         request_id: str | None = None,
     ):
-        del history
         session = self.get_session(session_id)
         if not session:
             yield {"type": "error", "message": "Session 不存在或已失效"}

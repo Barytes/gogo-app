@@ -41,6 +41,10 @@ def get_agent_backend_status() -> dict[str, Any]:
 
 
 def _collect_context(message: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    # Legacy app-layer pre-retrieval used by deprecated no-session APIs.
+    # We intentionally do not inject this fixed retrieval into the primary
+    # session-based chat path, because Pi native sessions already carry history
+    # and tool use can fetch context on demand.
     wiki_hits = search_pages(message, limit=6)
     raw_hits = search_raw_files(message, limit=4)
     return wiki_hits, raw_hits
@@ -84,6 +88,9 @@ def _build_pi_prompt(
 def _build_consulted_pages(
     wiki_hits: list[dict[str, Any]], raw_hits: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
+    # App-level UI metadata for surfacing pre-retrieved pages. This is not part
+    # of the knowledge-base spec and should not be treated as authoritative
+    # grounding metadata for the primary session path.
     pages = [
         {
             "path": page["path"],
@@ -588,14 +595,12 @@ async def stream_agent_chat(
 def run_session_chat(
     session_id: str,
     message: str,
-    history: list[dict[str, str]] | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
     pool = get_session_pool()
     result = pool.send_message(
         session_id=session_id,
         message=message,
-        history=history or [],
         stream=False,
         request_id=request_id,
     )
@@ -610,14 +615,12 @@ def run_session_chat(
 async def stream_session_chat(
     session_id: str,
     message: str,
-    history: list[dict[str, str]] | None = None,
     request_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     pool = get_session_pool()
     async for event in pool.send_message_async(
         session_id=session_id,
         message=message,
-        history=history or [],
         request_id=request_id,
     ):
         yield event

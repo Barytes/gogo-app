@@ -33,13 +33,20 @@ Session 主链路已收敛为 **RPC-only**：
 
 ### 后端 API
 
+- `POST /api/chat`：session-only 同步聊天
+- `POST /api/chat/stream`：session-only 流式聊天
 - `POST /api/sessions`：创建会话
 - `GET /api/sessions`：列出会话
 - `PATCH /api/sessions/{id}`：重命名会话
 - `DELETE /api/sessions/{id}`：删除会话
 - `GET /api/sessions/{id}/history`：会话历史恢复
-- `POST /api/chat/stream`（含 `session_id`）：会话流式聊天
 - `POST /api/sessions/{id}/chat/stream`：按会话 ID 的兼容流式入口
+- `POST /api/legacy/chat`：deprecated，无 session 单次聊天
+- `POST /api/legacy/chat/stream`：deprecated，无 session 流式聊天
+- 说明：
+  - `POST /api/chat` 与 `POST /api/chat/stream` 现在都要求 `session_id`
+  - `POST /api/sessions/{id}/chat/stream` 已收敛为只接收 `message + request_id`
+  - 无 session 单次聊天已迁移到 `/api/legacy/...`，并在 OpenAPI 中标记为 deprecated
 
 ### Session 管理器（主实现）
 
@@ -147,6 +154,7 @@ Session 主链路已收敛为 **RPC-only**：
   - 先 `POST /api/sessions` 创建会话
   - 会话标题默认取首条用户消息摘要
   - 再用该 `session_id` 发送流式聊天请求
+  - 因此前端当前不会暴露“无 session 单次聊天”入口
 - 输入框交互：
   - `Enter` 发送消息
   - `Shift+Enter` 插入换行

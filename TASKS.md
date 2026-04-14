@@ -56,14 +56,19 @@
   - [ ] 更新 RPC 链路：`get_available_models` + `set_model`
   - [ ] 完善错误提示与文档说明
 
-- [ ] 评估 `_build_pi_prompt` 中 history 注入是否仍有必要
-  - [ ] 判断是否可完全依赖 RPC 会话历史
-  - [ ] 明确无 session 场景的兜底策略
+- [x] 评估 `_build_pi_prompt` 中 history 注入是否仍有必要
+  - [x] 判断是否可完全依赖 RPC 会话历史
+  - [x] 明确无 session 场景的兜底策略
+  - 结论：`session_id` 链路已完全依赖 Pi RPC 原生会话历史，前端传入的 `history` 在 `session_manager.py` 中已被忽略；`_build_pi_prompt` 中的 history 注入仅对无 session 的单次聊天链路仍然必要，因为该链路使用 `--no-session`，没有可复用的原生会话上下文。
+  - 当前策略：保留 `_build_pi_prompt` 的最近历史注入，作为无 session 模式的兜底；若未来移除无 session 单次聊天入口，再考虑删除这部分 prompt 级 history 拼接。
 
-- [ ] 调整固定检索与 `consulted_pages` 注入
-  - [ ] 评估是否保留 `_collect_context()` 预检索
-  - [ ] 评估 `consulted_pages` 是否应继续作为 UI 数据返回
-  - [ ] 如果保留，明确它是应用层功能，而非 knowledge-base 规范
+- [x] 调整固定检索与 `consulted_pages` 注入
+  - [x] 评估是否保留 `_collect_context()` 预检索
+  - [x] 评估 `consulted_pages` 是否应继续作为 UI 数据返回
+  - [x] 如果保留，明确它是应用层功能，而非 knowledge-base 规范
+  - 结论：保留 `_collect_context()`，但仅保留在已 deprecated 的无 session 单次聊天链路中，作为兼容性预检索；不把这套固定检索迁入主 session 路径，避免污染 Pi 原生会话历史并与工具检索重复。
+  - 结论：保留 `consulted_pages`，但将其明确为应用层 UI 元数据，只表示“后端预检索到并展示给前端的候选页面”，不是 knowledge-base 规范的一部分，也不是主 session 链路的权威 grounding 元数据。
+  - 当前策略：主产品路径继续以 session + Pi 原生会话 + 工具调用为主；固定检索与 `consulted_pages` 仅服务于 legacy no-session 兼容路径。
 
 ### 1. gogo-app 与外部 knowledge-base 的连接质量
 
@@ -111,5 +116,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-04-14 | 将无 session `/api/chat` 与 `/api/chat/stream` 标记为 deprecated；完成固定检索与 `consulted_pages` 评估：两者仅保留为 legacy no-session 兼容能力与应用层 UI 元数据 |
+| 2026-04-14 | 完成 `_build_pi_prompt` history 注入评估：session 链路完全依赖 RPC 会话历史；无 session 单次聊天继续保留 prompt 级 history 兜底 |
 | 2026-04-14 | 完成会话管理对齐 ChatGPT：草稿态 + 懒创建 + 会话列表 `...` 菜单 + 重命名 API + 删除语义收敛 |
 | 2026-04-14 | 基于 `gogo-app / gogo-client / gogo-server / knowledge-base` 新划分，重拆任务归属 |

@@ -8,7 +8,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -30,6 +30,13 @@ from .session_manager import (
 ROOT_DIR = Path(__file__).resolve().parents[2]
 FRONTEND_DIR = ROOT_DIR / "app" / "frontend"
 logger = logging.getLogger(__name__)
+NO_SESSION_DEPRECATION_MESSAGE = (
+    "No-session chat mode is deprecated; create a session first and call the session chat flow."
+)
+NO_SESSION_DEPRECATION_HEADERS = {
+    "Deprecation": "true",
+    "Warning": f'299 gogo-app "{NO_SESSION_DEPRECATION_MESSAGE}"',
+}
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -48,8 +55,18 @@ class ChatTurn(BaseModel):
 
 class ChatRequest(BaseModel):
     message: str = Field(..., min_length=1)
+    session_id: str = Field(..., min_length=1, description="Session ID（必填，用于多轮对话）")
+    request_id: str | None = Field(default=None, description="请求 ID（可选）")
+
+
+class SessionChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
+    request_id: str | None = Field(default=None, description="请求 ID（可选）")
+
+
+class LegacyChatRequest(BaseModel):
+    message: str = Field(..., min_length=1)
     history: list[ChatTurn] = Field(default_factory=list)
-    session_id: str | None = Field(default=None, description="Session ID（可选，用于多轮对话）")
     request_id: str | None = Field(default=None, description="请求 ID（可选）")
 
 
@@ -154,19 +171,9 @@ def chat_suggestions() -> dict[str, list[str]]:
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
     request_id = _resolve_request_id(request.request_id)
-    # 如果提供了 session_id，使用 Session 池；否则走单次聊天链路
-    if request.session_id:
-        result = run_session_chat(
-            session_id=request.session_id,
-            message=request.message,
-            history=[_dump_turn(turn) for turn in request.history],
-            request_id=request_id,
-        )
-        result["request_id"] = request_id
-        return result
-    result = run_agent_chat(
+    result = run_session_chat(
+        session_id=request.session_id,
         message=request.message,
-        history=[_dump_turn(turn) for turn in request.history],
         request_id=request_id,
     )
     result["request_id"] = request_id
@@ -175,21 +182,35 @@ def chat(request: ChatRequest) -> dict[str, object]:
 
 @app.post("/api/chat/stream")
 async def chat_stream(request: ChatRequest) -> StreamingResponse:
-    history = [_dump_turn(turn) for turn in request.history]
     request_id = _resolve_request_id(request.request_id)
 
-    # 如果提供了 session_id，使用 Session 池；否则走单次聊天链路
-    if request.session_id:
-        async def session_event_stream():
-            async for event in stream_session_chat(
-                session_id=request.session_id,
-                message=request.message,
-                history=history,
-                request_id=request_id,
-            ):
-                event.setdefault("request_id", request_id)
-                yield f"{json.dumps(event, ensure_ascii=False)}\n"
-        return StreamingResponse(session_event_stream(), media_type="application/x-ndjson")
+    async def session_event_stream():
+        async for event in stream_session_chat(
+            session_id=request.session_id,
+            message=request.message,
+            request_id=request_id,
+        ):
+            event.setdefault("request_id", request_id)
+            yield f"{json.dumps(event, ensure_ascii=False)}\n"
+    return StreamingResponse(session_event_stream(), media_type="application/x-ndjson")
+
+
+@app.post("/api/legacy/chat", deprecated=True)
+def legacy_chat(request: LegacyChatRequest) -> JSONResponse:
+    request_id = _resolve_request_id(request.request_id)
+    result = run_agent_chat(
+        message=request.message,
+        history=[_dump_turn(turn) for turn in request.history],
+        request_id=request_id,
+    )
+    result["request_id"] = request_id
+    return JSONResponse(result, headers=NO_SESSION_DEPRECATION_HEADERS)
+
+
+@app.post("/api/legacy/chat/stream", deprecated=True)
+async def legacy_chat_stream(request: LegacyChatRequest) -> StreamingResponse:
+    request_id = _resolve_request_id(request.request_id)
+    history = [_dump_turn(turn) for turn in request.history]
 
     async def event_stream():
         async for event in stream_agent_chat(
@@ -200,7 +221,11 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
             event.setdefault("request_id", request_id)
             yield f"{json.dumps(event, ensure_ascii=False)}\n"
 
-    return StreamingResponse(event_stream(), media_type="application/x-ndjson")
+    return StreamingResponse(
+        event_stream(),
+        media_type="application/x-ndjson",
+        headers=NO_SESSION_DEPRECATION_HEADERS,
+    )
 
 
 @app.get("/api/wiki/pages")
@@ -364,21 +389,19 @@ def abort_session_response(session_id: str) -> dict[str, object]:
 
 
 @app.post("/api/sessions/{session_id}/chat/stream")
-async def session_chat_stream(session_id: str, request: ChatRequest) -> StreamingResponse:
+async def session_chat_stream(session_id: str, request: SessionChatRequest) -> StreamingResponse:
     """会话流式聊天"""
     pool = get_session_pool()
     session = pool.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
 
-    history = [{"role": turn.role, "content": turn.content} for turn in request.history]
     request_id = _resolve_request_id(request.request_id)
 
     async def event_stream():
         async for event in pool.send_message_async(
             session_id=session_id,
             message=request.message,
-            history=history,
             request_id=request_id,
         ):
             event.setdefault("request_id", request_id)
