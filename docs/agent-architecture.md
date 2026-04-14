@@ -1,6 +1,8 @@
 # Agent 服务架构
 
 > 本文档描述当前（F5 后）Agent 后端真实实现。
+>
+> 上层产品/应用架构见 [gogo-app-architecture.md](gogo-app-architecture.md)。
 
 **最后更新**: 2026-04-14
 

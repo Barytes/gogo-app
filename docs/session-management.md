@@ -1,6 +1,8 @@
 # Session 管理机制文档（与当前代码一致）
 
 > 适用代码：`app/frontend/assets/chat.js`、`app/backend/main.py`、`app/backend/session_manager.py`、`app/backend/pi_rpc_client.py`
+>
+> 上层产品/应用架构见 [gogo-app-architecture.md](gogo-app-architecture.md)。
 
 **更新时间**: 2026-04-14
 

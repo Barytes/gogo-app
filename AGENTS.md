@@ -21,7 +21,9 @@ For Pi agent / Pi SDK / bridge-related behavior and API questions, use the local
 ```
 product-definition-belief.md (North Star)
     ↓
-client-architecture.md + server-architecture.md (Architecture Design)
+gogo-project-architecture.md
+    ↓
+gogo-app-architecture.md + gogo-client-architecture.md + gogo-server-architecture.md + knowledge-base-architecture.md
     ↓
 TASKS.md (Task List - describes gaps between code and architecture)
     ↓
@@ -33,8 +35,11 @@ Code Implementation
 | Document | Purpose | Update Trigger |
 |----------|---------|----------------|
 | `product-definition-belief.md` | Core value proposition and goals | Rarely; only when product vision changes |
-| `client-architecture.md` | Local client architecture design | When client architecture decisions change |
-| `server-architecture.md` | Server architecture design | When server architecture decisions change |
+| `gogo-project-architecture.md` | Project-level relationship and boundaries | When the project split or system boundaries change |
+| `gogo-app-architecture.md` | gogo-app architecture design | When app architecture decisions change |
+| `gogo-client-architecture.md` | gogo-client architecture design | When client sync architecture changes |
+| `gogo-server-architecture.md` | gogo-server architecture design | When server aggregation architecture changes |
+| `knowledge-base-architecture.md` | knowledge-base architecture and schema boundaries | When knowledge-base structure or responsibilities change |
 | `agent-architecture.md` | Agent service architecture design | When Agent service implementation changes |
 | `TASKS.md` | Current code status + task list tracking gaps | Every code change; keep synced with code |
 
@@ -42,7 +47,7 @@ Code Implementation
 
 ### Rule 1: Architecture is the Guide
 
-Code should follow `client-architecture.md` and `server-architecture.md`. These documents describe the target architecture that the code should implement.
+Code should follow the relevant architecture documents in `docs/`, especially `gogo-project-architecture.md` and `gogo-app-architecture.md` for this repository.
 
 ### Rule 2: TASKS.md Tracks Gaps
 
@@ -58,7 +63,7 @@ Code should follow `client-architecture.md` and `server-architecture.md`. These 
 
 ### Rule 3: Architecture Changes Trigger Task Cleanup
 
-Whenever `client-architecture.md` or `server-architecture.md` is modified:
+Whenever any of `gogo-project-architecture.md`, `gogo-app-architecture.md`, `gogo-client-architecture.md`, `gogo-server-architecture.md`, or `knowledge-base-architecture.md` is modified:
 - Review `TASKS.md` and remove outdated tasks
 - Add new tasks for newly described features
 - Modify existing tasks if requirements changed
@@ -100,14 +105,14 @@ When working on Pi-related implementation (e.g. RPC session behavior, RPC/SDK us
 
 ## When Implementing Features
 
-1. **Read architecture first** — Understand the design in `client-architecture.md` or `server-architecture.md`
+1. **Read architecture first** — Understand the design in the relevant `docs/*-architecture.md`
 2. **Check `TASKS.md`** — See if the task is already described
 3. **Implement the code**
 4. **Update `TASKS.md`** — Mark task as completed, update code status
 
 ## When Architecture Changes
 
-1. **Modify the architecture document** (`client-architecture.md` or `server-architecture.md`)
+1. **Modify the relevant architecture document** in `docs/`
 2. **Immediately update `TASKS.md`**:
    - Remove tasks that are no longer relevant
    - Add new tasks for new features
@@ -122,8 +127,11 @@ gogo-app/
 ├── README.md                 # Project overview
 ├── docs/
 │   ├── product-definition-belief.md    # North Star
-│   ├── client-architecture.md          # Client design
-│   ├── server-architecture.md          # Server design
+│   ├── gogo-project-architecture.md    # Project-level design and boundaries
+│   ├── gogo-app-architecture.md        # gogo-app design
+│   ├── gogo-client-architecture.md     # gogo-client design
+│   ├── gogo-server-architecture.md     # gogo-server design
+│   ├── knowledge-base-architecture.md  # knowledge-base design
 │   ├── agent-architecture.md           # Agent service design (KEEP SYNCED)
 │   ├── pi/                             # Local mirror of Pi docs (reference first for Pi-related work)
 │   └── code-doc-mapping.md             # Code explanation doc ↔ code mapping
