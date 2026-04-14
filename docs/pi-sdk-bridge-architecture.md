@@ -1,6 +1,8 @@
-# Pi SDK Bridge 架构文档
+# Pi SDK Bridge 架构文档（已归档）
 
-> 本文档描述 `app/backend/pi_sdk_bridge.mjs` 的职责、数据流、事件协议与已知约束。
+> 本文档描述历史文件 `app/backend/pi_sdk_bridge.mjs` 的职责、数据流、事件协议与已知约束。
+>
+> 现状：该文件已在 F5 阶段删除，后端主链路已收敛为 `session_manager.py + pi_rpc_client.py`（RPC-only）。
 
 **最后更新**: 2026-04-13
 

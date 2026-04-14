@@ -1,169 +1,330 @@
-# Agent/Session 重构评估（Pi SDK 能力边界与落地路径）
+# Agent/Session 重构评估（含 Pi SDK 会话能力探针）
 
-> 适用代码：`app/backend/agent_service.py`、`app/backend/session_manager.py`、`app/backend/pi_sdk_bridge.mjs`、`app/backend/session_event_store.py`
+> 适用代码：`app/backend/agent_service.py`、`app/backend/session_manager.py`、`app/backend/pi_rpc_client.py`、`app/backend/config.py`
+>
+> 注：文档中包含重构前的历史分析（涉及旧文件）用于决策追溯；当前运行链路已为 RPC-only。
 
 **更新时间**: 2026-04-14
 
 ---
 
-## 1. 评估目标
+## 1. 目标
 
-基于当前代码与给定对话，评估是否可以将 `agent_service` + `session` 重构为更简洁高效的模式，并明确：
+基于当前实现和 `docs/pi/` 文档，完成 Pi SDK 会话能力探针，并给出两套“最优重构”方案：
 
-- 哪些能力可以交给 Pi SDK，避免重复造轮子
-- 哪些能力必须留在 gogo-app（业务层/产品层责任）
-- 推荐的重构路径、风险与回滚策略
+- 方案 F：完全重构（你偏好的方向）
+- 方案 G：渐进重构（风险最小方向）
 
----
-
-## 2. 先给结论（Executive Summary）
-
-可以重构得更简洁，但不建议“全删自研层”。
-
-1. 可以下沉给 Pi SDK 的部分：
-   - 对话树与会话历史持久化（前提：启用文件型 SessionManager，而非 `inMemory()`）
-   - Token/文本流事件订阅
-   - AgentSession 生命周期内的上下文连续性
-2. 仍应保留在 gogo-app 的部分：
-   - 会话列表 API、标题、删除、idle 清理等产品级会话管理
-   - 前后端统一 `request_id`、超时策略、可观测性与审计
-   - 与本地知识库检索策略耦合的业务逻辑
-3. 推荐目标不是“完全移除 session_manager”，而是：
-   - 将其降级为轻量编排层（orchestrator）
-   - 减少重复实现（尤其 `replay_history` / 自定义事件回放解析）
+每套方案都给出实施要点与 pros/cons。
 
 ---
 
-## 3. 对给定对话结论的逐条评估
+## 2. 会话能力探针（已完成）
 
-## 3.1 判断基本正确的部分
+探针来源：
 
-- `SessionManager.inMemory()` 不会产生 Pi 原生 JSONL，会话仅存在进程内存中。
-- 当前代码确实有“SDK能力 + 应用层重复实现”：
-  - 你们在 Python 端自己做了 JSONL 事件存储与历史重建
-  - Bridge 中又在 Session 内维护了上下文
-- 如果改为文件型会话管理器，历史回放这块可明显简化。
+- `docs/pi/session.md`
+- `docs/pi/sdk.md`
+- `docs/pi/rpc.md`
+- `docs/pi/README.md`
 
-## 3.2 需要修正或谨慎的部分
+## 2.1 已确认的会话能力
 
-- “可以直接用 Python SDK 替代 Node 子进程”：当前仓库没有 Python 版 Pi SDK 依赖证据，现状是 Node SDK + Python 调用桥接。
-- “SessionManager.create()/buildSessionContext()/appendCustomEntry() 一定可用”：该说法在你当前安装版本未完成本地 API 核验，不能直接当成事实。
-- “可以删除 session_manager.py”：不建议。即使下沉存储与历史，也仍需产品级会话编排与 API 语义层。
+1. 会话存储模型：
+   - Pi 原生会话是 JSONL 树结构，默认落盘于 `~/.pi/agent/sessions/...`
+   - `SessionManager.inMemory()` 不落盘，仅内存态
+2. SessionManager（SDK）：
+   - `create/open/continueRecent/inMemory/forkFrom`
+   - `list/listAll`
+   - `buildSessionContext/getEntries/getTree/getSessionFile/isPersisted`
+   - `appendCustomEntry/appendSessionInfo` 等
+3. Runtime 会话替换（SDK）：
+   - `createAgentSessionRuntime(...)`
+   - `runtime.newSession()/switchSession()/fork()/importFromJsonl()`
+4. RPC 会话能力（CLI）：
+   - `new_session/switch_session/get_state/get_messages/set_session_name/export_html`
+   - 可通过 `id` 做请求响应关联
+5. RPC 协议限制：
+   - 文档明确要求严格 LF JSONL framing
+   - 不建议用 Node `readline` 解析 RPC 帧（会有分隔符兼容问题）
 
----
+## 2.2 与重构前 gogo-app 的差异（关键，历史）
 
-## 4. 当前代码的复杂度来源（根因）
+1. 重构前 `pi_sdk_bridge.mjs` 使用 `SessionManager.inMemory()`，因此没有 Pi 原生 JSONL 会话文件。
+2. 重构前会话历史恢复依赖 `session_event_store.py + replay_history()` 手工重建，而非 SDK 原生上下文。
+3. 重构前 bridge 是自定义 stdin/stdout 协议，不是官方 RPC 协议。
 
-并非单一“代码写复杂了”，而是三层职责混在一起：
-
-1. SDK 运行时职责（Node/AgentSession）
-   - prompt 执行、流事件、模型 fallback、工具调用
-2. 应用业务职责（FastAPI）
-   - 会话列表/创建/删除/切换、前端状态一致性
-3. 可观测性与恢复职责（你们新增）
-   - request_id、timeout、事件落盘、回放
-
-当前复杂度高，是因为“2 + 3”被部分塞进“1”的边界里手工拼接。
-
----
-
-## 5. 可交给 Pi SDK vs 应保留自研（边界表）
-
-| 能力 | 是否建议交给 Pi SDK | 说明 |
-|---|---|---|
-| 会话上下文树管理 | 是 | SDK原生强项，避免手工拼 history |
-| 会话历史持久化（JSONL） | 是（前提启用文件型 manager） | 解决 `inMemory()` 导致无法导出原生会话 |
-| 流式 delta 事件生产 | 是 | SDK直接订阅，减少桥接层拼装 |
-| `request_id` 贯通 | 否 | 这是产品可观测性需求，需应用层定义 |
-| 全局审计日志 `events.jsonl` | 视需求 | SDK通常只管会话文件，不含全局审计 |
-| Session 列表/标题/删除 API | 否 | 产品功能，不是 SDK 职责 |
-| Idle 回收/资源配额 | 否 | 服务治理职责，需应用层维护 |
-| 检索策略（wiki/raw） | 否 | 业务策略，应留在 app |
+结论：能力层面完全可重构，但实现路径要在“SDK直连”与“RPC标准化”之间做取舍。
 
 ---
 
-## 6. 推荐重构方向（B+：保守但收益高）
+## 3. 功能边界：谁该负责
 
-不建议一步到位“全量替换”，建议采用 B+：
+## 3.1 建议交给 Pi SDK / RPC 的职责
 
-1. 保留 `session_manager.py` 作为编排层
-2. 逐步把“会话存储/历史重放”迁到 Pi SDK 原生能力
-3. 将“事件审计”保留为可选附加层（而非主数据源）
+- 会话树、分支、上下文构建
+- 会话持久化（JSONL）
+- 流式事件与消息状态
+- 会话列举/切换/fork（通过 Runtime 或 RPC）
 
-目标形态：
+## 3.2 建议保留在 gogo-app 的职责
+
+- 产品级会话元数据（标题策略、UI排序、业务标签）
+- 前后端 `request_id` 追踪与日志关联
+- 业务检索策略（wiki/raw 的检索时机和配额）
+- 服务治理（超时、限流、资源隔离、健康检查）
+
+---
+
+## 4. 最优方案 F（完全重构）
+
+目标：彻底移除“自定义 bridge 协议 + 手工 JSONL 事件重建”这条链路，统一到官方 RPC 协议。
+
+## 4.1 架构
 
 ```text
-FastAPI (业务路由/策略/可观测性)
-    -> Session Orchestrator (轻量)
-        -> Pi Bridge (Node SDK)
-            -> 文件型 SessionManager (原生 JSONL)
+FastAPI
+  -> RpcSessionPool（Python，轻量）
+      -> pi --mode rpc（每会话一个进程）
+          -> Pi 原生 SessionManager（文件型，JSONL）
 ```
 
----
+## 4.2 关键改造点
 
-## 7. 具体迁移步骤（建议分阶段）
+1. 删除自定义 bridge 协议路径：
+   - 弱化/移除 `pi_sdk_bridge.mjs` 作为主链路
+2. 新建 Python RPC client（严格 LF JSONL parser）：
+   - 发送 `prompt/new_session/get_state/get_messages/switch_session`
+   - 事件流直通前端
+3. 会话恢复改为 RPC/原生会话读取：
+   - `/api/sessions/{id}/history` 不再依赖 `replay_history()`
+4. `session_event_store.py` 下线并删除：
+   - 审计能力后续如需恢复，建议独立实现，不再耦合主链路
 
-## 阶段 0：能力探针（必须先做）
+## 4.3 Pros
 
-- 在 `pi_sdk_bridge.mjs` 里确认你当前 SDK 版本是否支持：
-  - 文件型 SessionManager 构造方式
-  - 历史 entries/tree 读取接口
-  - 是否存在官方会话导出 API
-- 形成一份“API实测清单”，再进入下一步。
+- 协议标准化，减少自定义协议维护成本
+- 和 Pi 官方演进方向一致（后续兼容性更好）
+- 删除大量手工回放和双份状态逻辑，代码更“薄”
 
-## 阶段 1：存储模式切换（最关键）
+## 4.4 Cons
 
-- 将 `SessionManager.inMemory()` 切换为文件型实现。
-- 保持现有协议不变，先确保行为兼容。
-- 验证：会话是否真实写入原生 JSONL 路径，重启后可读取。
-
-## 阶段 2：历史回放源切换
-
-- 让 `/api/sessions/{id}/history` 优先从 Pi 原生会话读取。
-- `session_event_store.py` 从“主存储”降级为“审计日志（可选）”。
-- 精简 `replay_history()` 中手工解析逻辑。
-
-## 阶段 3：上下文重复注入治理
-
-- 对 Session 模式，移除或弱化 `history` 手工拼接 prompt（避免双重上下文）。
-- 保留无 Session 模式的 fallback 路径。
-
-## 阶段 4：清理与收敛
-
-- 删除无价值重复代码与文档噪音。
-- 补全回归测试：会话切换、超时、重启恢复、并发请求。
+- 改动面最大，回归测试成本高
+- RPC framing 实现必须严格，初期容易踩协议细节坑
+- 需要重写现有 bridge 事件适配层和超时中断控制
 
 ---
 
-## 8. 预期收益
+## 5. 最优方案 G（渐进重构）
 
-- 代码体量下降：减少“手工事件回放 + 历史重建”相关复杂逻辑
-- 一致性提升：历史源从“自定义推导”转为“SDK原生记录”
-- 稳定性提升：降低会话切换时的状态分叉与事件丢失概率
+目标：保留现有 bridge 交互方式，先把最痛点（会话落盘与回放重复）切到 Pi 原生能力。
+
+## 5.1 架构
+
+```text
+FastAPI
+  -> SessionPool（保留）
+      -> pi_sdk_bridge.mjs（保留，但改造）
+          -> SessionManager.create/continueRecent（文件型）
+```
+
+## 5.2 关键改造点
+
+1. `pi_sdk_bridge.mjs`：
+   - `SessionManager.inMemory()` -> 文件型 `SessionManager.create(...)` 或 `continueRecent(...)`
+2. 历史恢复：
+   - 优先从 Pi 原生 session entries/context 读取
+   - `session_event_store + replay_history` 逐步下线
+3. 保留现有 API 形状：
+   - 前端和 FastAPI 路由基本不动，降低迁移噪音
+
+## 5.3 Pros
+
+- 对现有功能影响最小，迁移风险低
+- 可快速解决“无法导出原生会话 JSONL”的核心问题
+- 保留可回滚路径，便于线上稳态演进
+
+## 5.4 Cons
+
+- 自定义 bridge 仍在，长期技术债仍存在
+- 部分重复状态管理还会继续存在一段时间
+- 最终形态不如方案 F 简洁
 
 ---
 
-## 9. 风险与回滚
+## 6. 两种方式对比（结论）
 
-主要风险：
+| 维度 | 方案 F 完全重构（RPC） | 方案 G 渐进重构（保留 bridge） |
+|---|---|---|
+| 代码简洁度（长期） | 高 | 中 |
+| 首次改造风险 | 高 | 低 |
+| 交付速度 | 中-慢 | 快 |
+| 回滚难度 | 高 | 低 |
+| 与官方协议一致性 | 高 | 中 |
+| 对现有前后端兼容性 | 中 | 高 |
 
-- SDK 版本与文档示例不一致（API 不可用或行为差异）
-- 文件型 manager 带来的 I/O 与路径权限问题
-- 切换阶段导致新旧历史格式并存
-
-回滚策略：
-
-- 保留开关（`PI_SESSION_STORAGE_MODE=in_memory|file`）
-- 保留当前 `session_event_store` 作为兜底路径，待稳定后再降级/删除
+如果你明确要“完全重构”，当前最优就是方案 F。  
+如果你要“快速先稳住线上”，则先做方案 G 再转 F。
 
 ---
 
-## 10. 是否值得做
+## 7. 方案 F（完全重构）实施计划（可测试里程碑）
 
-值得做，但建议按阶段推进，不建议一次性重写。
+下面给出“完全重构优先”的落地计划。每个里程碑都对应你可以直接手测的功能结果。
 
-“全交给 SDK”是方向，不是边界答案；最终应是：
-- SDK 负责 Agent runtime 与原生会话语义
-- gogo-app 负责产品级会话治理与可观测性
+当前进展（2026-04-14）：
 
-这个分层更简洁，也更稳。
+- F1 已完成（代码与最小命令集验证通过）
+- F2 已完成（主链路切换、事件映射、request_id 贯通与文案对齐）
+- F3 已完成（Session 管理层接入 RPC 会话命令与并发互斥）
+- F4 已完成（历史恢复切到 Pi 原生会话链路）
+- F5 已完成（legacy 主路径下线，架构收敛为 RPC-only）
+
+## 7.1 当前实现与原方案描述的差异（已落地）
+
+为避免把“实施阶段假设”误读为“当前代码行为”，补充如下：
+
+1. 当前实现不是“每会话常驻一个 RPC 进程”，而是按请求启动 `PiRpcClient`，通过 `session_file` 做会话切换与复用。
+2. `session_event_store.py` 未降级保留，已直接删除；历史恢复路径为 `RPC get_messages -> 原生 session JSONL`。
+3. 迁移期 `PI_BACKEND_MODE` 已完成使命并移除，当前后端为 RPC-only。
+
+## F1：RPC 基座接入（旁路，不切主流量）
+
+目标：在不破坏现有链路的前提下，跑通 Pi 官方 RPC 协议基础能力。
+
+实现步骤：
+
+1. 新建 Python 侧 RPC 客户端模块（严格 LF JSONL framing）。
+2. 实现命令发送/响应关联（统一 `id`）。
+3. 支持最小命令集：`get_state`、`prompt`、`abort`。
+4. 迁移阶段新增后端开关（如 `PI_BACKEND_MODE=legacy|rpc`），用于灰度切换。
+5. 增加基础诊断日志（请求/响应耗时、超时、进程退出码）。
+
+可测试结果：
+
+- （历史验收）切到 `PI_BACKEND_MODE=rpc` 能完成一轮最小问答（流式或非流式）。
+- 超时/abort 能返回可见错误，不会卡死输入框。
+
+## F2：聊天主链路切换到 RPC（保留 Session API 形状）
+
+目标：`/api/chat` 与 `/api/chat/stream` 主路径改为 RPC 执行。
+
+当前状态：✅ 已完成（2026-04-14）
+
+落地结果（已实现）：
+
+1. `agent_service.py` 下线 legacy bridge 主分支，单次聊天固定走 RPC 执行器。
+2. `session_manager.py` 收敛为 RPC-only 会话管理；`session_event_store.py` 已删除。
+3. 历史恢复默认不依赖 `.gogo-sessions`，主数据源为 Pi 原生会话（在线 `get_messages` + 离线 JSONL）。
+4. 文档与任务同步更新，F1-F5 全部闭环。
+
+实现步骤：
+
+1. `agent_service.py` 引入 RPC 执行器，替代 bridge 子进程调用。
+2. 将 RPC 事件映射为现有前端事件类型（`thinking_delta/text_delta/trace/final/error`）。
+3. 保留并贯通 `request_id`（前端 -> 后端 -> 日志）。
+4. 对齐当前超时策略与错误文案，避免回归。
+
+可测试结果：
+
+- 现有前端不改交互即可正常流式回复。
+- 简单问题（如“你是谁”）可稳定返回，不出现“长期 pending”。
+
+## F3：多会话与会话元数据切换到 RPC 会话机制
+
+目标：`/api/sessions` 系列接口在 RPC 模式下可用并保持现有体验。
+
+当前状态：✅ 已完成（2026-04-14）
+
+实现步骤：
+
+1. 在 Session 管理层接入 RPC 会话命令（`new_session`、`switch_session`、`set_session_name`、`get_state`）。
+2. 保持现有 API 返回结构（`session_id/title/message_count` 等字段语义兼容）。
+3. 处理会话并发互斥（每会话单飞、会话切换时 pending 正确）。
+4. 对齐删除/回收逻辑（映射到 session file 生命周期或归档策略）。
+
+可测试结果：
+
+- 可创建两个会话并来回切换，各自上下文独立。
+- 会话标题可设置并在列表稳定显示。
+
+## F4：历史恢复切到 Pi 原生会话（替换手工 replay）
+
+目标：`/api/sessions/{id}/history` 不再依赖 `session_event_store + replay_history` 主路径。
+
+当前状态：✅ 已完成（2026-04-14）
+
+实现步骤：
+
+1. 优先通过 RPC `get_messages` 获取当前会话消息。
+2. 为“进程不在线”场景增加离线读取（从 Pi 原生 JSONL 会话文件恢复）。
+3. 前端继续使用现有 hydrate 逻辑，无感切换数据源。
+4. 校准消息映射（assistant/tool/custom）到前端展示模型。
+
+可测试结果：
+
+- 刷新页面后切回旧会话，历史仍可恢复。
+- 后端重启后，历史恢复仍可用（基于 Pi 原生 JSONL）。
+
+## F5：旧链路下线与收敛
+
+目标：完成“完全重构”闭环，旧架构退出主路径。
+
+当前状态：✅ 已完成（2026-04-14）
+
+实现步骤：
+
+1. 删除 `pi_sdk_bridge.mjs`。
+2. 删除 `session_event_store.py`，并移除 `replay_history` 对其主路径依赖。
+3. 清理遗留配置项与死代码，更新全部架构文档。
+4. 补齐回归清单与验收脚本（会话切换、超时、恢复、并发）。
+
+可测试结果：
+
+- 复现你之前报告的切会话/超时问题场景，行为稳定且可重复通过。
+- 默认运行时不再依赖 `.gogo-sessions` 作为主会话数据源。
+
+---
+
+## 8. 两条路径的 Pros / Cons（用于决策复核）
+
+## 8.1 完全重构（方案 F）
+
+Pros：
+
+- 长期架构最简洁，协议与 Pi 官方一致。
+- 会话与历史语义统一，减少“双份状态”与手工回放逻辑。
+- 后续维护成本最低。
+
+Cons：
+
+- 首次改造风险与回归压力最大。
+- RPC 协议细节（framing/并发/取消）实现门槛高。
+- 需要一轮较完整的端到端测试建设。
+
+## 8.2 渐进重构（方案 G）
+
+Pros：
+
+- 风险低，交付快，可快速止血。
+- 对现有前后端改动小，回滚容易。
+
+Cons：
+
+- 保留 bridge 技术债，长期复杂度仍偏高。
+- 同期会存在新旧两套语义，团队认知负担更大。
+
+---
+
+## 9. 执行建议（基于你的偏好）
+
+你已明确“希望完全重构”，建议直接按 F1 -> F5 执行。  
+其中 F2/F3/F4 都是用户可直接感知并可手测验收的节点，F5 作为收口节点。
+
+---
+
+## 10. 文档级事实约束
+
+1. 当前仓库并未包含 `node_modules`，因此本次探针是“文档能力探针”，不是“本地二进制行为实测”。
+2. 文档已明确 `SessionManager.inMemory()` 不持久化，因此它不能导出 Pi 原生 JSONL 会话。
+3. 若切到 RPC，必须按 `docs/pi/rpc.md` 的 LF JSONL framing 实现，不能直接复用不兼容的行分割器实现。

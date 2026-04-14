@@ -1,11 +1,10 @@
 """
-Session 管理器模块
+Session 管理器（RPC-only）
 
-提供 Pi SDK Session 的池化管理，支持：
-- Session 创建、获取、归还、销毁
-- 长连接支持（避免每条问题新建 session）
-- 多会话并行（支持用户同时开启多个对话）
-- Session 元数据管理（创建时间、最后使用时间等）
+主链路：
+- Pi RPC 会话管理（new/switch/get_state/get_messages）
+- 会话元数据持久化（registry JSON）
+- 历史恢复优先：RPC 在线 -> 原生 session JSONL 离线
 """
 
 from __future__ import annotations
@@ -13,37 +12,62 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import subprocess
 import threading
 import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, AsyncIterator
 
 from .config import (
-    get_pi_node_command_path,
-    get_pi_sdk_bridge_path,
-    get_session_event_store_dir,
+    get_pi_command_path,
+    get_pi_rpc_session_dir,
     get_pi_thinking_level,
     get_pi_timeout_seconds,
     get_pi_workdir,
 )
-from .session_event_store import SessionEventStore
+from .pi_rpc_client import PiRpcClient, PiRpcError
 
 
 logger = logging.getLogger(__name__)
 
+PI_TIMEOUT_USER_MESSAGE = "Pi 回复超时，本次请求已自动停止。你可以重试，或切换会话继续提问。"
+PI_INTERRUPTED_USER_MESSAGE = "Pi 回复异常中断，本次请求已自动停止。你可以重试，或切换会话继续提问。"
+
+REGISTRY_FILENAME = "gogo-session-registry.json"
+
+
+def _run_coro_sync(coro):
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)
+
+    result: dict[str, Any] = {"value": None, "error": None}
+
+    def worker() -> None:
+        try:
+            result["value"] = asyncio.run(coro)
+        except Exception as exc:
+            result["error"] = exc
+
+    thread = threading.Thread(target=worker, daemon=True)
+    thread.start()
+    thread.join()
+
+    if result["error"] is not None:
+        raise result["error"]
+    return result["value"]
+
 
 @dataclass
 class SessionInfo:
-    """Session 元数据"""
-
     session_id: str
     created_at: float = field(default_factory=time.time)
     last_used_at: float = field(default_factory=time.time)
     message_count: int = 0
-    title: str = ""  # 会话标题（可由用户设置或自动生成）
+    title: str = ""
+    pending_request_id: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -52,372 +76,245 @@ class SessionInfo:
             "last_used_at": self.last_used_at,
             "message_count": self.message_count,
             "title": self.title or f"会话 {self.session_id[:8]}",
+            "is_pending": bool(self.pending_request_id),
         }
 
 
 @dataclass
 class SessionProcess:
-    """Session 进程包装器"""
-
     session_id: str
-    process: subprocess.Popen | None = None
+    session_file: str = ""
+    workdir: str = ""
+    thinking_level: str = "medium"
     info: SessionInfo = field(default_factory=lambda: SessionInfo(session_id=""))
     lock: threading.Lock = field(default_factory=threading.Lock)
-    _stdin_lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def __post_init__(self):
+    def __post_init__(self) -> None:
         self.info.session_id = self.session_id
 
 
 class SessionPool:
-    """
-    Session 池管理器
-
-    维护一个 Pi SDK Session 的池子，支持复用和并发访问。
-    每个 Session 对应一个独立的 Node.js 子进程，通过 stdin/stdout 通信。
-    """
-
     def __init__(self, max_sessions: int = 10, idle_timeout: int = 3600):
-        """
-        Args:
-            max_sessions: 最大 Session 数量
-            idle_timeout: Session 空闲超时（秒），超时后自动回收
-        """
         self.max_sessions = max_sessions
         self.idle_timeout = idle_timeout
         self._sessions: dict[str, SessionProcess] = {}
         self._lock = threading.RLock()
         self._cleanup_task: asyncio.Task | None = None
-        self._event_store = SessionEventStore(get_session_event_store_dir())
 
-    def _record_event(
-        self,
-        *,
-        event_type: str,
-        session_id: str,
-        request_id: str | None = None,
-        payload: dict[str, Any] | None = None,
-    ) -> None:
+        self._session_dir = get_pi_rpc_session_dir()
+        self._session_dir.mkdir(parents=True, exist_ok=True)
+        self._registry_file = self._session_dir / REGISTRY_FILENAME
+        self._registry: dict[str, dict[str, Any]] = self._load_registry()
+        self._restore_sessions_from_registry()
+
+    def _load_registry(self) -> dict[str, dict[str, Any]]:
+        if not self._registry_file.exists():
+            return {}
         try:
-            self._event_store.append_event(
-                event_type=event_type,
-                session_id=session_id,
-                request_id=request_id,
-                payload=payload,
-            )
+            raw = self._registry_file.read_text(encoding="utf-8")
+            data = json.loads(raw)
         except Exception:
-            logger.exception("Failed to append session event")
+            logger.warning("Failed to load session registry: %s", self._registry_file, exc_info=True)
+            return {}
+
+        items = data.get("sessions") if isinstance(data, dict) else None
+        if not isinstance(items, list):
+            return {}
+
+        out: dict[str, dict[str, Any]] = {}
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            sid = str(item.get("session_id") or "").strip()
+            if not sid:
+                continue
+            out[sid] = item
+        return out
+
+    def _save_registry(self) -> None:
+        payload = {
+            "version": 1,
+            "updated_at": time.time(),
+            "sessions": sorted(
+                self._registry.values(),
+                key=lambda it: float(it.get("last_used_at") or 0.0),
+                reverse=True,
+            ),
+        }
+        self._registry_file.parent.mkdir(parents=True, exist_ok=True)
+        self._registry_file.write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+
+    def _sync_registry_from_session(self, session: SessionProcess) -> None:
+        self._registry[session.session_id] = {
+            "session_id": session.session_id,
+            "session_file": session.session_file,
+            "workdir": session.workdir,
+            "thinking_level": session.thinking_level,
+            "title": session.info.title,
+            "created_at": session.info.created_at,
+            "last_used_at": session.info.last_used_at,
+            "message_count": session.info.message_count,
+        }
+        self._save_registry()
+
+    def _remove_registry_session(self, session_id: str) -> None:
+        if session_id in self._registry:
+            self._registry.pop(session_id, None)
+            self._save_registry()
+
+    def _restore_sessions_from_registry(self) -> None:
+        for sid, record in self._registry.items():
+            session_file = str(record.get("session_file") or "").strip()
+            if not session_file:
+                continue
+            session = SessionProcess(
+                session_id=sid,
+                session_file=session_file,
+                workdir=str(record.get("workdir") or str(get_pi_workdir())),
+                thinking_level=str(record.get("thinking_level") or get_pi_thinking_level()),
+            )
+            session.info.created_at = float(record.get("created_at") or time.time())
+            session.info.last_used_at = float(record.get("last_used_at") or session.info.created_at)
+            session.info.message_count = int(record.get("message_count") or 0)
+            session.info.title = str(record.get("title") or "").strip()
+            self._sessions[sid] = session
+
+    def _evict_oldest(self) -> None:
+        oldest_id = None
+        oldest_ts = float("inf")
+        for sid, session in self._sessions.items():
+            if session.info.pending_request_id:
+                continue
+            if session.info.last_used_at < oldest_ts:
+                oldest_ts = session.info.last_used_at
+                oldest_id = sid
+        if oldest_id:
+            self.destroy_session(oldest_id)
 
     def create_session(
         self,
         cwd: str | None = None,
         thinking_level: str | None = None,
         system_prompt: str | None = None,
+        title: str | None = None,
     ) -> str:
-        """
-        创建新 Session
-
-        Args:
-            cwd: 工作目录
-            thinking_level: 思考级别
-            system_prompt: 系统提示词
-
-        Returns:
-            session_id
-        """
+        del system_prompt  # RPC 链路暂不支持 per-session system prompt
         with self._lock:
             if len(self._sessions) >= self.max_sessions:
-                # 池子已满，回收最老的空闲 Session
                 self._evict_oldest()
 
-            session_id = str(uuid.uuid4())
-            session_process = SessionProcess(session_id=session_id)
-            self._sessions[session_id] = session_process
-
-            # 启动 Node.js 子进程（长连接模式）
-            process = self._start_session_process(
-                cwd=cwd,
-                thinking_level=thinking_level,
-                system_prompt=system_prompt,
+            sid = str(uuid.uuid4())
+            session = SessionProcess(
+                session_id=sid,
+                workdir=str(cwd) if cwd else str(get_pi_workdir()),
+                thinking_level=thinking_level or get_pi_thinking_level(),
             )
-            session_process.process = process
-            self._record_event(
-                event_type="session_created",
-                session_id=session_id,
-                payload={
-                    "cwd": str(cwd) if cwd else str(get_pi_workdir()),
-                    "thinking_level": thinking_level or get_pi_thinking_level(),
-                    "has_system_prompt": bool(system_prompt),
-                },
-            )
+            if title:
+                session.info.title = title
+            self._bootstrap_rpc_session(session)
+            self._sessions[sid] = session
+            self._sync_registry_from_session(session)
+            return sid
 
-            return session_id
+    def _bootstrap_rpc_session(self, session: SessionProcess) -> None:
+        command_path = get_pi_command_path()
+        if not command_path:
+            raise RuntimeError("RPC mode requires `pi` command on PATH.")
 
-    def _start_session_process(
-        self,
-        cwd: str | None = None,
-        thinking_level: str | None = None,
-        system_prompt: str | None = None,
-    ) -> subprocess.Popen:
-        """启动 Node.js Session 进程"""
-        node_command = get_pi_node_command_path() or "node"
-        bridge_path = get_pi_sdk_bridge_path()
-        workdir = str(cwd) if cwd else str(get_pi_workdir())
-        level = thinking_level or get_pi_thinking_level()
+        session_dir = get_pi_rpc_session_dir()
+        session_dir.mkdir(parents=True, exist_ok=True)
 
-        # 构建初始化 payload
-        init_payload = {
-            "cwd": workdir,
-            "thinking_level": level,
-            "system_prompt": system_prompt or "",
-            "mode": "long_running",  # 长连接模式标识
-        }
+        async def bootstrap() -> dict[str, Any]:
+            async with PiRpcClient(
+                command_path=command_path,
+                cwd=session.workdir,
+                timeout_seconds=get_pi_timeout_seconds(),
+                extra_args=["--session-dir", str(session_dir)],
+            ) as client:
+                await client.get_state(request_id=f"{session.session_id}:bootstrap:state")
+                await client.new_session(request_id=f"{session.session_id}:bootstrap:new")
+                await client.set_thinking_level(
+                    level=session.thinking_level,
+                    request_id=f"{session.session_id}:bootstrap:thinking",
+                )
+                if session.info.title:
+                    await client.set_session_name(
+                        name=session.info.title,
+                        request_id=f"{session.session_id}:bootstrap:name",
+                    )
+                return await client.get_state(
+                    request_id=f"{session.session_id}:bootstrap:state2"
+                )
 
-        process = subprocess.Popen(
-            [node_command, str(bridge_path)],
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            bufsize=1,
-            cwd=workdir,
-        )
+        state = _run_coro_sync(bootstrap())
+        session_file = str(state.get("sessionFile") or "").strip()
+        if not session_file:
+            raise RuntimeError("RPC session bootstrap failed: missing sessionFile")
+        session.session_file = session_file
 
-        # 发送初始化配置（非阻塞）
-        def send_init():
-            try:
-                process.stdin.write(json.dumps(init_payload) + "\n")
-                process.stdin.flush()
-            except Exception:
-                pass  # 初始化失败不影响后续使用
-
-        threading.Thread(target=send_init, daemon=True).start()
-
-        return process
+        session_name = str(state.get("sessionName") or "").strip()
+        if session_name:
+            session.info.title = session_name
 
     def get_session(self, session_id: str) -> SessionProcess | None:
-        """
-        获取 Session
-
-        Args:
-            session_id: Session ID
-
-        Returns:
-            SessionProcess 或 None（不存在）
-        """
         with self._lock:
             session = self._sessions.get(session_id)
             if session:
                 session.info.last_used_at = time.time()
+                self._sync_registry_from_session(session)
             return session
 
-    def return_session(self, session_id: str) -> None:
-        """
-        归还 Session 到池中
-
-        Args:
-            session_id: Session ID
-        """
-        with self._lock:
-            session = self._sessions.get(session_id)
-            if session:
-                session.info.last_used_at = time.time()
-                session.info.message_count += 1
-
-    def destroy_session(self, session_id: str) -> bool:
-        """
-        销毁 Session
-
-        Args:
-            session_id: Session ID
-
-        Returns:
-            是否成功销毁
-        """
-        with self._lock:
-            session = self._sessions.pop(session_id, None)
-            if session:
-                self._record_event(
-                    event_type="session_destroyed",
-                    session_id=session_id,
-                    payload={"message_count": session.info.message_count},
-                )
-                self._terminate_process(session)
-                return True
-            return False
-
-    def _terminate_process(self, session: SessionProcess) -> None:
-        """终止 Session 进程"""
-        with session.lock:
-            if session.process:
-                try:
-                    session.process.terminate()
-                    session.process.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    session.process.kill()
-                except Exception:
-                    pass
-                session.process = None
-
-    def _evict_oldest(self) -> None:
-        """回收最老的空闲 Session"""
-        oldest_id = None
-        oldest_time = float("inf")
-
-        for sid, session in self._sessions.items():
-            if session.info.last_used_at < oldest_time:
-                oldest_time = session.info.last_used_at
-                oldest_id = sid
-
-        if oldest_id:
-            self.destroy_session(oldest_id)
-
     def list_sessions(self) -> list[dict[str, Any]]:
-        """
-        列出所有活跃 Session
-
-        Returns:
-            Session 元数据列表
-        """
         with self._lock:
-            return [session.info.to_dict() for session in self._sessions.values()]
+            items = sorted(
+                self._sessions.values(),
+                key=lambda s: s.info.last_used_at,
+                reverse=True,
+            )
+            return [item.info.to_dict() for item in items]
 
     def get_session_count(self) -> int:
-        """获取当前 Session 数量"""
         with self._lock:
             return len(self._sessions)
 
-    def cleanup_idle(self) -> list[str]:
-        """
-        清理空闲超时的 Session
+    def _delete_native_session_file(self, session: SessionProcess) -> None:
+        if not session.session_file:
+            return
+        try:
+            path = Path(session.session_file).expanduser()
+            if path.exists():
+                path.unlink()
+        except Exception:
+            logger.warning("Failed to delete native session file: %s", session.session_file, exc_info=True)
 
-        Returns:
-            被清理的 Session ID 列表
-        """
-        cleaned = []
-        now = time.time()
-
+    def destroy_session(self, session_id: str) -> bool:
         with self._lock:
-            to_remove = []
+            session = self._sessions.pop(session_id, None)
+            if not session:
+                return False
+            self._delete_native_session_file(session)
+            self._remove_registry_session(session_id)
+            return True
+
+    def cleanup_idle(self) -> list[str]:
+        now = time.time()
+        cleaned: list[str] = []
+        with self._lock:
+            to_remove: list[str] = []
             for sid, session in self._sessions.items():
+                if session.info.pending_request_id:
+                    continue
                 if now - session.info.last_used_at > self.idle_timeout:
                     to_remove.append(sid)
-
             for sid in to_remove:
-                self.destroy_session(sid)
-                cleaned.append(sid)
-
+                if self.destroy_session(sid):
+                    cleaned.append(sid)
         return cleaned
 
-    def replay_history(self, session_id: str, max_turns: int = 200) -> list[dict[str, str]]:
-        """
-        Rebuild chat history from persisted JSONL events.
-
-        Args:
-            session_id: Session ID
-            max_turns: Max number of turns (user/assistant items) to return
-        """
-        events = self._event_store.load_session_events(session_id)
-        if not events:
-            return []
-
-        requests: dict[str, dict[str, Any]] = {}
-        order: list[str] = []
-        last_key: str | None = None
-
-        def ensure_request(key: str, ts: float) -> dict[str, Any]:
-            if key not in requests:
-                requests[key] = {
-                    "first_ts": ts,
-                    "user_message": "",
-                    "assistant_buffer": "",
-                    "final_message": "",
-                    "error_message": "",
-                }
-                order.append(key)
-            return requests[key]
-
-        for index, record in enumerate(events):
-            if not isinstance(record, dict):
-                continue
-            event_type = str(record.get("type") or "")
-            ts = float(record.get("ts") or 0.0)
-            request_id = record.get("request_id")
-            request_key = str(request_id).strip() if request_id else ""
-            if not request_key:
-                if event_type == "request_started":
-                    request_key = f"legacy-{index}"
-                elif last_key:
-                    request_key = last_key
-                else:
-                    request_key = f"orphan-{index}"
-
-            request_state = ensure_request(request_key, ts)
-            last_key = request_key
-
-            payload = record.get("payload")
-            payload = payload if isinstance(payload, dict) else {}
-
-            if event_type == "request_started":
-                message = payload.get("message")
-                if isinstance(message, str) and message.strip():
-                    request_state["user_message"] = message
-                continue
-
-            if event_type != "stream_event":
-                continue
-
-            stream_type = str(payload.get("type") or "")
-            if stream_type == "text_delta":
-                delta = payload.get("delta")
-                if isinstance(delta, str) and delta:
-                    request_state["assistant_buffer"] += delta
-                continue
-
-            if stream_type == "text_replace":
-                text = payload.get("text")
-                if isinstance(text, str):
-                    request_state["assistant_buffer"] = text
-                continue
-
-            if stream_type == "final":
-                final_message = payload.get("message")
-                if isinstance(final_message, str) and final_message.strip():
-                    request_state["final_message"] = final_message
-                continue
-
-            if stream_type == "error":
-                error_message = payload.get("message")
-                if isinstance(error_message, str) and error_message.strip():
-                    request_state["error_message"] = error_message
-
-        history: list[dict[str, str]] = []
-        for key in order:
-            state = requests.get(key, {})
-            user_message = str(state.get("user_message") or "").strip()
-            if user_message:
-                history.append({"role": "user", "content": user_message})
-
-            assistant_message = (
-                str(state.get("final_message") or "").strip()
-                or str(state.get("assistant_buffer") or "").strip()
-                or str(state.get("error_message") or "").strip()
-            )
-            if assistant_message:
-                history.append({"role": "assistant", "content": assistant_message})
-
-        if max_turns > 0 and len(history) > max_turns:
-            return history[-max_turns:]
-        return history
-
     async def start_cleanup_loop(self, interval: int = 300) -> None:
-        """
-        启动后台清理循环
-
-        Args:
-            interval: 清理间隔（秒）
-        """
-
         if self._cleanup_task and not self._cleanup_task.done():
             return
 
@@ -429,10 +326,219 @@ class SessionPool:
         self._cleanup_task = asyncio.create_task(cleanup_loop())
 
     def stop_cleanup_loop(self) -> None:
-        """停止后台清理循环"""
         if self._cleanup_task:
             self._cleanup_task.cancel()
             self._cleanup_task = None
+
+    def _extract_text_from_content(self, content: Any) -> str:
+        if isinstance(content, str):
+            return content.strip()
+        if isinstance(content, list):
+            parts: list[str] = []
+            for item in content:
+                if not isinstance(item, dict):
+                    continue
+                if str(item.get("type") or "") != "text":
+                    continue
+                text = item.get("text")
+                if isinstance(text, str) and text:
+                    parts.append(text)
+            return "".join(parts).strip()
+        return ""
+
+    def _extract_assistant_text_from_messages(self, messages: Any) -> str:
+        if not isinstance(messages, list):
+            return ""
+        latest_text = ""
+        for item in messages:
+            if not isinstance(item, dict):
+                continue
+            if str(item.get("role") or "") != "assistant":
+                continue
+            text = self._extract_text_from_content(item.get("content"))
+            if text:
+                latest_text = text
+        return latest_text
+
+    def _rpc_trace_item_from_event(self, event: dict[str, Any]) -> dict[str, Any] | None:
+        event_type = str(event.get("type") or "")
+        if event_type == "tool_execution_start":
+            tool_name = str(event.get("toolName") or "unknown")
+            args = event.get("args")
+            detail = f"{tool_name}"
+            if isinstance(args, dict) and args:
+                detail = f"{tool_name} {json.dumps(args, ensure_ascii=False)}"
+            return {
+                "kind": "tool",
+                "title": f"调用工具：{tool_name}",
+                "detail": detail,
+                "action": "tool",
+                "event_type": event_type,
+            }
+        if event_type == "tool_execution_end" and bool(event.get("isError")):
+            tool_name = str(event.get("toolName") or "unknown")
+            return {
+                "kind": "status",
+                "title": f"工具出错：{tool_name}",
+                "detail": "Pi RPC reported a tool execution error.",
+                "action": "status",
+                "event_type": event_type,
+            }
+        if event_type == "extension_error":
+            return {
+                "kind": "status",
+                "title": "扩展错误",
+                "detail": str(event.get("error") or "Unknown extension error."),
+                "action": "status",
+                "event_type": event_type,
+            }
+        return None
+
+    async def _stream_rpc_request(
+        self,
+        *,
+        session: SessionProcess,
+        message: str,
+        request_id: str | None,
+    ) -> AsyncIterator[dict[str, Any]]:
+        if not session.lock.acquire(blocking=False):
+            yield {
+                "type": "error",
+                "message": "该会话已有进行中的请求，请等待当前回复结束后再发送。",
+                "warnings": ["Session is busy with another request."],
+            }
+            return
+
+        session.info.pending_request_id = request_id or f"pending-{uuid.uuid4()}"
+        session.info.last_used_at = time.time()
+        self._sync_registry_from_session(session)
+
+        trace: list[dict[str, Any]] = []
+        streamed_text_chunks: list[str] = []
+        client: PiRpcClient | None = None
+
+        try:
+            command_path = get_pi_command_path()
+            if not command_path:
+                yield {
+                    "type": "error",
+                    "message": "RPC 模式下未找到 `pi` 命令，请检查环境配置。",
+                    "warnings": ["Pi command not found on PATH."],
+                }
+                return
+
+            async with PiRpcClient(
+                command_path=command_path,
+                cwd=session.workdir,
+                timeout_seconds=get_pi_timeout_seconds(),
+                extra_args=["--session-dir", str(get_pi_rpc_session_dir())],
+            ) as rpc_client:
+                client = rpc_client
+                switch_result = await rpc_client.switch_session(
+                    session_path=session.session_file,
+                    request_id=f"{request_id}:switch" if request_id else None,
+                )
+                if bool(switch_result.get("cancelled")):
+                    yield {
+                        "type": "error",
+                        "message": "Pi 拒绝切换会话，本次请求已取消。",
+                        "warnings": ["Pi RPC switch_session cancelled."],
+                    }
+                    return
+
+                if session.info.title:
+                    try:
+                        await rpc_client.set_session_name(
+                            name=session.info.title,
+                            request_id=f"{request_id}:name" if request_id else None,
+                        )
+                    except PiRpcError:
+                        logger.warning("Failed to sync session name", exc_info=True)
+
+                async for rpc_event in rpc_client.prompt_events(
+                    message=message,
+                    request_id=request_id,
+                ):
+                    event_type = str(rpc_event.get("type") or "")
+                    if event_type == "message_update":
+                        assistant_event = rpc_event.get("assistantMessageEvent")
+                        if not isinstance(assistant_event, dict):
+                            continue
+                        assistant_event_type = str(assistant_event.get("type") or "")
+                        if assistant_event_type == "text_delta":
+                            delta = assistant_event.get("delta")
+                            if isinstance(delta, str) and delta:
+                                streamed_text_chunks.append(delta)
+                                yield {"type": "text_delta", "delta": delta}
+                            continue
+                        if assistant_event_type == "thinking_delta":
+                            delta = assistant_event.get("delta")
+                            if isinstance(delta, str) and delta:
+                                yield {"type": "thinking_delta", "delta": delta}
+                            continue
+                        if assistant_event_type == "error":
+                            reason = str(assistant_event.get("reason") or "error")
+                            yield {
+                                "type": "error",
+                                "message": PI_INTERRUPTED_USER_MESSAGE,
+                                "warnings": [f"Pi assistant stream error: {reason}"],
+                                "trace": trace,
+                            }
+                            return
+                        continue
+
+                    trace_item = self._rpc_trace_item_from_event(rpc_event)
+                    if trace_item:
+                        trace.append(trace_item)
+                        yield {"type": "trace", "item": trace_item}
+
+                    if event_type == "agent_end":
+                        final_text = self._extract_assistant_text_from_messages(
+                            rpc_event.get("messages")
+                        )
+                        if not final_text:
+                            final_text = "".join(streamed_text_chunks).strip()
+                        yield {
+                            "type": "final",
+                            "message": final_text or "Pi RPC 未返回可见文本。",
+                            "warnings": [],
+                            "trace": trace,
+                            "history_length": session.info.message_count + 1,
+                        }
+                        return
+
+        except asyncio.TimeoutError:
+            if client is not None:
+                try:
+                    await client.abort(request_id=f"{request_id}:abort" if request_id else None)
+                except Exception:
+                    logger.warning("Failed to abort RPC request after timeout", exc_info=True)
+            yield {
+                "type": "error",
+                "message": PI_TIMEOUT_USER_MESSAGE,
+                "warnings": ["Pi RPC read timeout while streaming."],
+                "trace": trace,
+            }
+        except PiRpcError as exc:
+            yield {
+                "type": "error",
+                "message": f"Pi RPC 调用失败：{exc}",
+                "warnings": [str(exc)],
+                "trace": trace,
+            }
+        except Exception as exc:
+            yield {
+                "type": "error",
+                "message": f"Pi RPC 未能完成请求：{exc}",
+                "warnings": [str(exc)],
+                "trace": trace,
+            }
+        finally:
+            session.info.pending_request_id = None
+            session.info.last_used_at = time.time()
+            session.info.message_count += 1
+            self._sync_registry_from_session(session)
+            session.lock.release()
 
     def send_message(
         self,
@@ -442,80 +548,38 @@ class SessionPool:
         stream: bool = True,
         request_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """
-        发送消息到 Session（同步模式）
-
-        Args:
-            session_id: Session ID
-            message: 用户消息
-            history: 对话历史
-            stream: 是否流式
-
-        Returns:
-            响应数据或 None
-        """
+        del history
         session = self.get_session(session_id)
-        if not session or not session.process:
+        if not session:
             return None
 
-        thinking_level = get_pi_thinking_level()
-        payload = {
-            "prompt": message,
-            "history": history or [],
-            "thinking_level": thinking_level,
-            "stream": stream,
-            "request_id": request_id,
-        }
-        self._record_event(
-            event_type="request_started",
-            session_id=session_id,
-            request_id=request_id,
-            payload={
-                "message": message,
-                "history_length": len(history or []),
-                "stream": stream,
-            },
-        )
+        if stream:
+            return {"ok": True}
 
-        with session._stdin_lock:
-            try:
-                session.process.stdin.write(json.dumps(payload) + "\n")
-                session.process.stdin.flush()
+        async def gather_final() -> dict[str, Any]:
+            async for event in self._stream_rpc_request(
+                session=session,
+                message=message,
+                request_id=request_id,
+            ):
+                event_type = str(event.get("type") or "")
+                if event_type == "final":
+                    return {
+                        "ok": True,
+                        "message": str(event.get("message") or "").strip(),
+                        "warnings": event.get("warnings", []),
+                        "trace": event.get("trace", []),
+                    }
+                if event_type == "error":
+                    return {
+                        "ok": False,
+                        "error": str(event.get("message") or "Pi RPC 调用失败"),
+                        "warnings": event.get("warnings", []),
+                        "trace": event.get("trace", []),
+                    }
+            return {"ok": False, "error": "No terminal event returned."}
 
-                if not stream:
-                    # 同步模式：读取完整响应
-                    line = session.process.stdout.readline()
-                    if line:
-                        self.return_session(session_id)
-                        response = json.loads(line)
-                        self._record_event(
-                            event_type="request_completed",
-                            session_id=session_id,
-                            request_id=request_id,
-                            payload={"stream": stream, "ok": True},
-                        )
-                        return response
-                else:
-                    # 流式模式：由调用者自行读取
-                    self.return_session(session_id)
-                    self._record_event(
-                        event_type="request_completed",
-                        session_id=session_id,
-                        request_id=request_id,
-                        payload={"stream": stream, "ok": True},
-                    )
-                    return {"ok": True}
-
-            except Exception:
-                self._record_event(
-                    event_type="request_failed",
-                    session_id=session_id,
-                    request_id=request_id,
-                    payload={"stream": stream, "reason": "sync_send_exception"},
-                )
-                return None
-
-        return None
+        return _run_coro_sync(gather_final())
 
     async def send_message_async(
         self,
@@ -524,129 +588,183 @@ class SessionPool:
         history: list[dict[str, str]] | None = None,
         request_id: str | None = None,
     ):
-        """
-        发送消息到 Session（异步流式模式）
-
-        Args:
-            session_id: Session ID
-            message: 用户消息
-            history: 对话历史
-
-        Yields:
-            事件字典
-        """
+        del history
         session = self.get_session(session_id)
-        if not session or not session.process:
-            yield {"type": "error", "message": "Session 不存在或进程已终止"}
+        if not session:
+            yield {"type": "error", "message": "Session 不存在或已失效"}
             return
 
-        thinking_level = get_pi_thinking_level()
-        payload = {
-            "prompt": message,
-            "history": history or [],
-            "thinking_level": thinking_level,
-            "stream": True,
-            "request_id": request_id,
-        }
-        self._record_event(
-            event_type="request_started",
-            session_id=session_id,
+        async for event in self._stream_rpc_request(
+            session=session,
+            message=message,
             request_id=request_id,
-            payload={
-                "message": message,
-                "history_length": len(history or []),
-                "stream": True,
-            },
-        )
-        terminal_type = "stream_ended"
+        ):
+            yield event
+
+    def _history_from_agent_messages(
+        self,
+        *,
+        messages: list[dict[str, Any]],
+        max_turns: int,
+    ) -> list[dict[str, str]]:
+        history: list[dict[str, str]] = []
+        for message in messages:
+            role = str(message.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            content_text = self._extract_text_from_content(message.get("content"))
+            if not content_text:
+                continue
+            history.append({"role": role, "content": content_text})
+        if max_turns > 0 and len(history) > max_turns:
+            return history[-max_turns:]
+        return history
+
+    def _load_history_via_rpc(
+        self,
+        *,
+        session: SessionProcess,
+        max_turns: int,
+    ) -> list[dict[str, str]] | None:
+        if not session.session_file:
+            return None
+        if not session.lock.acquire(blocking=False):
+            return None
 
         try:
-            with session._stdin_lock:
-                session.process.stdin.write(json.dumps(payload) + "\n")
-                session.process.stdin.flush()
+            command_path = get_pi_command_path()
+            if not command_path:
+                return None
 
-            # 异步读取流式响应
-            loop = asyncio.get_event_loop()
-            stream_timeout_seconds = max(30, int(get_pi_timeout_seconds()))
-            while True:
-                try:
-                    line = await asyncio.wait_for(
-                        loop.run_in_executor(None, session.process.stdout.readline),
-                        timeout=stream_timeout_seconds,
+            async def fetch_messages() -> list[dict[str, Any]]:
+                async with PiRpcClient(
+                    command_path=command_path,
+                    cwd=session.workdir,
+                    timeout_seconds=get_pi_timeout_seconds(),
+                    extra_args=["--session-dir", str(get_pi_rpc_session_dir())],
+                ) as client:
+                    await client.switch_session(
+                        session_path=session.session_file,
+                        request_id=f"{session.session_id}:history:switch",
                     )
-                except asyncio.TimeoutError:
-                    timeout_event = {
-                        "type": "error",
-                        "message": f"Session 响应超时（>{stream_timeout_seconds}s），请重试。",
-                        "warnings": [f"Session stream timeout after {stream_timeout_seconds}s."],
-                    }
-                    self._record_event(
-                        event_type="stream_event",
-                        session_id=session_id,
-                        request_id=request_id,
-                        payload=timeout_event,
+                    return await client.get_messages(
+                        request_id=f"{session.session_id}:history:get_messages",
                     )
-                    yield timeout_event
-                    terminal_type = "timeout"
-                    break
-                if not line:
-                    returncode = session.process.poll()
-                    if returncode is not None:
-                        stderr_text = ""
-                        try:
-                            if session.process.stderr:
-                                stderr_text = session.process.stderr.read().strip()
-                        except Exception:
-                            stderr_text = ""
-                        detail = (
-                            f"Session 进程已退出（code={returncode}）。"
-                            + (f" stderr: {stderr_text}" if stderr_text else "")
-                        )
-                        exited_event = {
-                            "type": "error",
-                            "message": detail,
-                            "warnings": [detail],
-                        }
-                        self._record_event(
-                            event_type="stream_event",
-                            session_id=session_id,
-                            request_id=request_id,
-                            payload=exited_event,
-                        )
-                        yield exited_event
-                        terminal_type = "process_exited"
-                    break
-                try:
-                    event = json.loads(line.strip())
-                    self._record_event(
-                        event_type="stream_event",
-                        session_id=session_id,
-                        request_id=request_id,
-                        payload=event,
-                    )
-                    yield event
-                    if event.get("type") in ("final", "error"):
-                        terminal_type = str(event.get("type"))
-                        break
-                except json.JSONDecodeError:
-                    continue
 
-        finally:
-            self.return_session(session_id)
-            self._record_event(
-                event_type="request_completed",
-                session_id=session_id,
-                request_id=request_id,
-                payload={"stream": True, "terminal_type": terminal_type},
+            messages = _run_coro_sync(fetch_messages())
+            if not isinstance(messages, list):
+                return []
+            return self._history_from_agent_messages(messages=messages, max_turns=max_turns)
+        except Exception:
+            logger.warning(
+                "Failed to load history via RPC for session %s",
+                session.session_id,
+                exc_info=True,
             )
+            return None
+        finally:
+            session.lock.release()
+
+    def _load_history_from_native_jsonl(
+        self,
+        *,
+        session_file: str,
+        max_turns: int,
+    ) -> list[dict[str, str]] | None:
+        path = Path(session_file).expanduser()
+        if not path.exists():
+            return None
+
+        entries_by_id: dict[str, dict[str, Any]] = {}
+        order: list[str] = []
+        try:
+            with path.open("r", encoding="utf-8") as handle:
+                for raw_line in handle:
+                    line = raw_line.strip()
+                    if not line:
+                        continue
+                    try:
+                        entry = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(entry, dict):
+                        continue
+                    entry_id = str(entry.get("id") or "").strip()
+                    if not entry_id:
+                        continue
+                    entries_by_id[entry_id] = entry
+                    order.append(entry_id)
+        except Exception:
+            logger.warning("Failed to parse native session file: %s", session_file, exc_info=True)
+            return None
+
+        if not order:
+            return []
+
+        leaf_id = order[-1]
+        path_ids: list[str] = []
+        guard = 0
+        while leaf_id and guard < 100000:
+            guard += 1
+            entry = entries_by_id.get(leaf_id)
+            if not entry:
+                break
+            path_ids.append(leaf_id)
+            parent_id = entry.get("parentId")
+            if not isinstance(parent_id, str) or not parent_id.strip():
+                break
+            leaf_id = parent_id
+        path_ids.reverse()
+
+        messages: list[dict[str, Any]] = []
+        for entry_id in path_ids:
+            entry = entries_by_id.get(entry_id)
+            if not isinstance(entry, dict):
+                continue
+            if str(entry.get("type") or "") != "message":
+                continue
+            message = entry.get("message")
+            if isinstance(message, dict):
+                messages.append(message)
+
+        return self._history_from_agent_messages(messages=messages, max_turns=max_turns)
+
+    def replay_history(self, session_id: str, max_turns: int = 200) -> list[dict[str, str]]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session is None:
+                record = self._registry.get(session_id)
+                if record:
+                    session = SessionProcess(
+                        session_id=session_id,
+                        session_file=str(record.get("session_file") or ""),
+                        workdir=str(record.get("workdir") or str(get_pi_workdir())),
+                        thinking_level=str(record.get("thinking_level") or get_pi_thinking_level()),
+                    )
+                    session.info.title = str(record.get("title") or "").strip()
+                    session.info.created_at = float(record.get("created_at") or time.time())
+                    session.info.last_used_at = float(record.get("last_used_at") or session.info.created_at)
+                    session.info.message_count = int(record.get("message_count") or 0)
+                    self._sessions[session_id] = session
+
+        if session:
+            online = self._load_history_via_rpc(session=session, max_turns=max_turns)
+            if online is not None:
+                return online
+            if session.session_file:
+                offline = self._load_history_from_native_jsonl(
+                    session_file=session.session_file,
+                    max_turns=max_turns,
+                )
+                if offline is not None:
+                    return offline
+        return []
 
 
-# 全局 Session 池实例
 _global_pool: SessionPool | None = None
 
 
 def get_session_pool() -> SessionPool:
-    """获取全局 Session 池"""
     global _global_pool
     if _global_pool is None:
         _global_pool = SessionPool()
@@ -654,12 +772,10 @@ def get_session_pool() -> SessionPool:
 
 
 def reset_session_pool() -> None:
-    """重置全局 Session 池（用于测试或重启）"""
     global _global_pool
     if _global_pool:
         _global_pool.stop_cleanup_loop()
-        # 销毁所有 Session
-        session_ids = list(_global_pool._sessions.keys())
-        for sid in session_ids:
-            _global_pool.destroy_session(sid)
+        for session in _global_pool._sessions.values():
+            session.info.pending_request_id = None
+            _global_pool._sync_registry_from_session(session)
     _global_pool = None

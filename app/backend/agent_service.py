@@ -2,40 +2,46 @@ from __future__ import annotations
 
 import asyncio
 import json
-import subprocess
+import logging
 from typing import Any, AsyncIterator
 
 from .config import (
-    get_pi_node_command,
-    get_pi_node_command_path,
-    get_pi_sdk_bridge_path,
+    get_pi_command,
+    get_pi_command_path,
     get_pi_thinking_level,
     get_pi_timeout_seconds,
     get_pi_workdir,
 )
+from .pi_rpc_client import PiRpcClient, PiRpcError
 from .raw_service import search_raw_files
-from .wiki_service import search_pages
 from .session_manager import get_session_pool
+from .wiki_service import search_pages
+
+
+logger = logging.getLogger(__name__)
+PI_TIMEOUT_USER_MESSAGE = "Pi 回复超时，本次请求已自动停止。你可以重试，或切换会话继续提问。"
+PI_INTERRUPTED_USER_MESSAGE = "Pi 回复异常中断，本次请求已自动停止。你可以重试，或切换会话继续提问。"
 
 
 def get_agent_backend_status() -> dict[str, Any]:
-    pi_sdk_bridge_path = get_pi_sdk_bridge_path()
     pool = get_session_pool()
+    rpc_command_path = get_pi_command_path()
+    rpc_available = bool(rpc_command_path)
     return {
         "mode": "pi",
-        "pi_node_command": get_pi_node_command(),
-        "pi_node_command_path": get_pi_node_command_path(),
-        "pi_sdk_bridge_path": str(pi_sdk_bridge_path),
+        "pi_backend_mode": "rpc",
+        "pi_command": get_pi_command(),
+        "pi_command_path": rpc_command_path,
+        "pi_rpc_available": rpc_available,
         "pi_thinking_level": get_pi_thinking_level(),
         "pi_workdir": str(get_pi_workdir()),
-        "pi_available": bool(get_pi_node_command_path()) and pi_sdk_bridge_path.exists(),
+        "pi_available": rpc_available,
         "session_pool_count": pool.get_session_count(),
     }
 
 
 def _collect_context(message: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    # 优先检索个人知识库，不足时再检索 public-pool
-    wiki_hits = search_pages(message, limit=6)  # 个人知识库优先，给更多配额
+    wiki_hits = search_pages(message, limit=6)
     raw_hits = search_raw_files(message, limit=4)
     return wiki_hits, raw_hits
 
@@ -73,17 +79,6 @@ def _build_pi_prompt(
             )
 
     return "\n".join(prompt_lines)
-
-
-def _build_pi_system_prompt() -> str:
-    """构建精简的系统提示词，指引 Agent 阅读知识库规范并设定回答风格。"""
-    return "\n".join([
-        "你是一个课题组公共知识库的助手。优先阅读以下文档理解行为规范：",
-        "1. knowledge-base/AGENTS.md - 核心职责和工作流程",
-        "2. knowledge-base/COMMUNICATION.md - 沟通风格和协作方式",
-        "",
-        "个性：耐心、乐于帮助用户，愿意详细深入地分析问题，为用户提供详尽的解答，但语言保持准确精炼不啰嗦，给出高信噪比的回答，保持开放、探索的心态探寻知识库中的内容，遵守知识库规则和用户的指令，严谨地维护知识库中的页面，禁止随意更改知识库的 schema。",
-    ])
 
 
 def _build_consulted_pages(
@@ -126,12 +121,13 @@ def _pi_error_response(
     warnings: list[str],
     consulted_pages: list[dict[str, Any]] | None = None,
     history_length: int = 1,
+    trace: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     return {
         "mode": "pi",
         "message": message,
         "consulted_pages": consulted_pages or [],
-        "trace": [],
+        "trace": trace or [],
         "history_length": history_length,
         "suggested_prompts": [
             "请只根据当前命中的本地页面回答。",
@@ -154,134 +150,215 @@ def _pi_error_event(error_response: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _prepare_pi_request(
+def _prepare_rpc_request(
     message: str, history: list[dict[str, str]]
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
     wiki_hits, raw_hits = _collect_context(message)
     consulted_pages = _build_consulted_pages(wiki_hits, raw_hits)
     history_length = len(history) + 1
 
-    pi_node_command_path = get_pi_node_command_path()
-    if not pi_node_command_path:
+    pi_command_path = get_pi_command_path()
+    if not pi_command_path:
         return None, _pi_error_response(
-            message=(
-                "当前后端只支持 Pi agent，但运行机器上没有找到可用的 Node.js。\n"
-                "请先安装 Node.js，并在 gogo-app 目录执行 `npm install`。"
-            ),
-            warnings=[
-                "Node.js command not found on PATH.",
-                "Install Node.js and the Pi SDK dependency.",
-            ],
+            message="当前后端使用 Pi RPC，但运行机器上没有找到 `pi` 命令。",
+            warnings=["Pi command not found on PATH."],
             consulted_pages=consulted_pages,
             history_length=history_length,
         )
 
-    pi_sdk_bridge_path = get_pi_sdk_bridge_path()
-    if not pi_sdk_bridge_path.exists():
-        return None, _pi_error_response(
-            message="Pi SDK bridge 脚本不存在，当前无法执行聊天请求。",
-            warnings=["Pi SDK bridge script not found."],
-            consulted_pages=consulted_pages,
-            history_length=history_length,
-        )
-
-    payload = {
-        "cwd": str(get_pi_workdir()),
-        "system_prompt": _build_pi_system_prompt(),
-        "prompt": _build_pi_prompt(message, history, wiki_hits, raw_hits),
-        "thinking_level": get_pi_thinking_level(),
-    }
+    full_prompt = _build_pi_prompt(message, history, wiki_hits, raw_hits)
     return (
         {
-            "command": [pi_node_command_path, str(pi_sdk_bridge_path)],
+            "command_path": pi_command_path,
             "cwd": str(get_pi_workdir()),
-            "payload": payload,
+            "prompt": full_prompt,
             "consulted_pages": consulted_pages,
             "history_length": history_length,
+            "timeout_seconds": get_pi_timeout_seconds(),
         },
         None,
     )
 
 
-def _run_pi_agent_chat(message: str, history: list[dict[str, str]]) -> dict[str, Any]:
-    prepared, error_response = _prepare_pi_request(message, history)
+def _extract_text_from_content(content: Any) -> str:
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if not isinstance(item, dict):
+                continue
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                parts.append(text)
+        return "".join(parts)
+    return ""
+
+
+def _extract_assistant_text_from_messages(messages: Any) -> str:
+    if not isinstance(messages, list):
+        return ""
+    latest_text = ""
+    for item in messages:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("role") or "") != "assistant":
+            continue
+        text = _extract_text_from_content(item.get("content"))
+        if text.strip():
+            latest_text = text.strip()
+    return latest_text
+
+
+def _rpc_trace_item_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
+    event_type = str(event.get("type") or "")
+    if event_type == "tool_execution_start":
+        tool_name = str(event.get("toolName") or "unknown")
+        args = event.get("args")
+        detail = f"{tool_name}"
+        if isinstance(args, dict) and args:
+            detail = f"{tool_name} {json.dumps(args, ensure_ascii=False)}"
+        return {
+            "kind": "tool",
+            "title": f"调用工具：{tool_name}",
+            "detail": detail,
+            "action": "tool",
+            "event_type": event_type,
+        }
+    if event_type == "tool_execution_end" and bool(event.get("isError")):
+        tool_name = str(event.get("toolName") or "unknown")
+        return {
+            "kind": "status",
+            "title": f"工具出错：{tool_name}",
+            "detail": "Pi RPC reported a tool execution error.",
+            "action": "status",
+            "event_type": event_type,
+        }
+    if event_type == "extension_error":
+        return {
+            "kind": "status",
+            "title": "扩展错误",
+            "detail": str(event.get("error") or "Unknown extension error."),
+            "action": "status",
+            "event_type": event_type,
+        }
+    return None
+
+
+async def _run_pi_rpc_agent_chat_async(
+    message: str,
+    history: list[dict[str, str]],
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    prepared, error_response = _prepare_rpc_request(message, history)
     if error_response:
         return error_response
     assert prepared is not None
 
+    consulted_pages = prepared["consulted_pages"]
+    trace: list[dict[str, Any]] = []
+    streamed_text_chunks: list[str] = []
+    client: PiRpcClient | None = None
+
     try:
-        result = subprocess.run(
-            prepared["command"],
+        async with PiRpcClient(
+            command_path=prepared["command_path"],
             cwd=prepared["cwd"],
-            input=json.dumps(prepared["payload"]),
-            capture_output=True,
-            text=True,
-            timeout=get_pi_timeout_seconds(),
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
+            timeout_seconds=prepared["timeout_seconds"],
+            extra_args=["--no-session"],
+        ) as rpc_client:
+            client = rpc_client
+            await rpc_client.get_state(
+                request_id=f"{request_id}:state" if request_id else None
+            )
+
+            async for event in rpc_client.prompt_events(
+                message=prepared["prompt"],
+                request_id=request_id,
+            ):
+                event_type = str(event.get("type") or "")
+                if event_type == "message_update":
+                    assistant_event = event.get("assistantMessageEvent")
+                    if isinstance(assistant_event, dict):
+                        assistant_event_type = str(assistant_event.get("type") or "")
+                        if assistant_event_type == "text_delta":
+                            delta = assistant_event.get("delta")
+                            if isinstance(delta, str):
+                                streamed_text_chunks.append(delta)
+                        elif assistant_event_type == "error":
+                            reason = str(assistant_event.get("reason") or "error")
+                            return _pi_error_response(
+                                message=PI_INTERRUPTED_USER_MESSAGE,
+                                warnings=[f"Pi assistant stream error: {reason}"],
+                                consulted_pages=consulted_pages,
+                                history_length=prepared["history_length"],
+                                trace=trace,
+                            )
+                    continue
+
+                trace_item = _rpc_trace_item_from_event(event)
+                if trace_item:
+                    trace.append(trace_item)
+
+                if event_type == "agent_end":
+                    final_text = _extract_assistant_text_from_messages(event.get("messages"))
+                    if not final_text:
+                        final_text = "".join(streamed_text_chunks).strip()
+                    if not final_text:
+                        final_text = "Pi RPC 未返回可见文本。"
+                    return {
+                        "mode": "pi",
+                        "message": final_text,
+                        "consulted_pages": consulted_pages,
+                        "trace": trace,
+                        "history_length": prepared["history_length"],
+                        "suggested_prompts": _default_suggested_prompts(),
+                        "warnings": [],
+                    }
+
+    except asyncio.TimeoutError:
+        if client is not None:
+            try:
+                await client.abort(request_id=f"{request_id}:abort" if request_id else None)
+            except Exception:
+                logger.warning("Failed to send RPC abort after timeout", exc_info=True)
         return _pi_error_response(
-            message="Pi SDK 调用超时，本次请求没有拿到有效回复。",
-            warnings=["Pi SDK bridge timed out."],
-            consulted_pages=prepared["consulted_pages"],
+            message=PI_TIMEOUT_USER_MESSAGE,
+            warnings=["Pi RPC read timeout."],
+            consulted_pages=consulted_pages,
+            history_length=prepared["history_length"],
+        )
+    except PiRpcError as exc:
+        logger.exception("Pi RPC call failed")
+        return _pi_error_response(
+            message=f"Pi RPC 调用失败：{exc}",
+            warnings=[str(exc)],
+            consulted_pages=consulted_pages,
+            history_length=prepared["history_length"],
+        )
+    except Exception as exc:
+        logger.exception("Unexpected Pi RPC error")
+        return _pi_error_response(
+            message=f"Pi RPC 未能完成请求：{exc}",
+            warnings=[str(exc)],
+            consulted_pages=consulted_pages,
             history_length=prepared["history_length"],
         )
 
-    if result.returncode != 0:
-        stderr = (result.stderr or "").strip()
-        return _pi_error_response(
-            message=(
-                "Pi SDK 调用失败，本次请求没有拿到有效回复。\n"
-                f"Pi stderr: {stderr or 'no stderr output'}"
-            ),
-            warnings=[stderr or "Pi SDK bridge exited with a non-zero status."],
-            consulted_pages=prepared["consulted_pages"],
-            history_length=prepared["history_length"],
-        )
-
-    try:
-        pi_response = json.loads(result.stdout or "{}")
-    except json.JSONDecodeError:
-        return _pi_error_response(
-            message="Pi SDK 返回了无法解析的响应。",
-            warnings=["Pi SDK bridge returned invalid JSON."],
-            consulted_pages=prepared["consulted_pages"],
-            history_length=prepared["history_length"],
-        )
-
-    if not pi_response.get("ok"):
-        bridge_error = str(
-            pi_response.get("error") or "Pi SDK bridge reported an unknown error."
-        )
-        return _pi_error_response(
-            message=f"Pi SDK 未能成功完成请求。\nPi error: {bridge_error}",
-            warnings=[bridge_error],
-            consulted_pages=prepared["consulted_pages"],
-            history_length=prepared["history_length"],
-        )
-
-    message_text = (str(pi_response.get("message") or "")).strip() or "Pi SDK 未返回可见文本。"
-    warnings = [
-        str(item).strip()
-        for item in pi_response.get("warnings", [])
-        if str(item).strip()
-    ]
-
-    return {
-        "mode": "pi",
-        "message": message_text,
-        "consulted_pages": prepared["consulted_pages"],
-        "trace": pi_response.get("trace", []),
-        "history_length": prepared["history_length"],
-        "suggested_prompts": _default_suggested_prompts(),
-        "warnings": warnings,
-    }
+    return _pi_error_response(
+        message="Pi RPC 未返回 agent_end 事件，无法确定最终答复。",
+        warnings=["Missing agent_end event from Pi RPC."],
+        consulted_pages=consulted_pages,
+        history_length=prepared["history_length"],
+    )
 
 
-async def stream_agent_chat(
-    message: str, history: list[dict[str, str]] | None = None
+async def _stream_pi_rpc_chat(
+    message: str,
+    history: list[dict[str, str]],
+    request_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    prepared, error_response = _prepare_pi_request(message, history or [])
+    prepared, error_response = _prepare_rpc_request(message, history)
     if error_response:
         yield _pi_error_event(error_response)
         return
@@ -293,121 +370,150 @@ async def stream_agent_chat(
         "consulted_pages": consulted_pages,
     }
 
-    payload = dict(prepared["payload"])
-    payload["stream"] = True
+    trace: list[dict[str, Any]] = []
+    streamed_text_chunks: list[str] = []
+    client: PiRpcClient | None = None
 
-    process = await asyncio.create_subprocess_exec(
-        *prepared["command"],
-        cwd=prepared["cwd"],
-        stdin=asyncio.subprocess.PIPE,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-
-    assert process.stdin is not None
-    process.stdin.write(json.dumps(payload).encode("utf-8"))
-    await process.stdin.drain()
-    process.stdin.close()
-
-    timeout_seconds = get_pi_timeout_seconds()
-    final_event_seen = False
-
-    assert process.stdout is not None
-    while True:
-        try:
-            raw_line = await asyncio.wait_for(
-                process.stdout.readline(),
-                timeout=timeout_seconds,
+    try:
+        async with PiRpcClient(
+            command_path=prepared["command_path"],
+            cwd=prepared["cwd"],
+            timeout_seconds=prepared["timeout_seconds"],
+            extra_args=["--no-session"],
+        ) as rpc_client:
+            client = rpc_client
+            await rpc_client.get_state(
+                request_id=f"{request_id}:state" if request_id else None
             )
-        except asyncio.TimeoutError:
-            process.kill()
-            await process.wait()
-            yield _pi_error_event(
-                _pi_error_response(
-                    message="Pi SDK 调用超时，本次请求没有拿到有效回复。",
-                    warnings=["Pi SDK bridge timed out while streaming."],
-                    consulted_pages=consulted_pages,
-                    history_length=prepared["history_length"],
-                )
-            )
-            return
 
-        if not raw_line:
-            break
+            async for event in rpc_client.prompt_events(
+                message=prepared["prompt"],
+                request_id=request_id,
+            ):
+                event_type = str(event.get("type") or "")
 
-        line = raw_line.decode("utf-8", errors="replace").strip()
-        if not line:
-            continue
+                if event_type == "message_update":
+                    assistant_event = event.get("assistantMessageEvent")
+                    if not isinstance(assistant_event, dict):
+                        continue
+                    assistant_event_type = str(assistant_event.get("type") or "")
+                    if assistant_event_type == "text_delta":
+                        delta = assistant_event.get("delta")
+                        if isinstance(delta, str):
+                            streamed_text_chunks.append(delta)
+                            yield {"type": "text_delta", "delta": delta}
+                    elif assistant_event_type == "thinking_delta":
+                        delta = assistant_event.get("delta")
+                        if isinstance(delta, str):
+                            yield {"type": "thinking_delta", "delta": delta}
+                    elif assistant_event_type == "error":
+                        reason = str(assistant_event.get("reason") or "error")
+                        yield _pi_error_event(
+                            _pi_error_response(
+                                message=PI_INTERRUPTED_USER_MESSAGE,
+                                warnings=[f"Pi assistant stream error: {reason}"],
+                                consulted_pages=consulted_pages,
+                                history_length=prepared["history_length"],
+                                trace=trace,
+                            )
+                        )
+                        return
+                    continue
 
-        try:
-            event = json.loads(line)
-        except json.JSONDecodeError:
-            yield {
-                "type": "trace",
-                "item": {
-                    "kind": "status",
-                    "title": "Bridge parse warning",
-                    "detail": "收到了一条无法解析的 Pi 事件。",
-                },
-            }
-            continue
+                trace_item = _rpc_trace_item_from_event(event)
+                if trace_item:
+                    trace.append(trace_item)
+                    yield {"type": "trace", "item": trace_item}
 
-        if not isinstance(event, dict):
-            continue
+                if event_type == "agent_end":
+                    final_text = _extract_assistant_text_from_messages(event.get("messages"))
+                    if not final_text:
+                        final_text = "".join(streamed_text_chunks).strip()
+                    yield {
+                        "type": "final",
+                        "message": final_text or "Pi RPC 未返回可见文本。",
+                        "warnings": [],
+                        "trace": trace,
+                        "consulted_pages": consulted_pages,
+                        "history_length": prepared["history_length"],
+                        "suggested_prompts": _default_suggested_prompts(),
+                    }
+                    return
 
-        event_type = str(event.get("type") or "").strip()
-        if event_type == "final":
-            final_event_seen = True
-            event.setdefault("consulted_pages", consulted_pages)
-            event.setdefault("history_length", prepared["history_length"])
-            event.setdefault("suggested_prompts", _default_suggested_prompts())
-            yield event
-            continue
-
-        if event_type == "error":
-            final_event_seen = True
-            event.setdefault("consulted_pages", consulted_pages)
-            event.setdefault("history_length", prepared["history_length"])
-            event.setdefault(
-                "suggested_prompts",
-                [
-                    "请只根据当前命中的本地页面回答。",
-                    "请说明还缺哪些知识库内容。",
-                    "请把这个问题拆成更小的检索问题。",
-                ],
-            )
-            yield event
-            continue
-
-        yield event
-
-    stderr = ""
-    if process.stderr is not None:
-        stderr_bytes = await process.stderr.read()
-        stderr = stderr_bytes.decode("utf-8", errors="replace").strip()
-
-    returncode = await process.wait()
-    if returncode != 0 and not final_event_seen:
+    except asyncio.TimeoutError:
+        if client is not None:
+            try:
+                await client.abort(request_id=f"{request_id}:abort" if request_id else None)
+            except Exception:
+                logger.warning("Failed to send RPC abort after timeout", exc_info=True)
         yield _pi_error_event(
             _pi_error_response(
-                message=(
-                    "Pi SDK 调用失败，本次请求没有拿到有效回复。\n"
-                    f"Pi stderr: {stderr or 'no stderr output'}"
-                ),
-                warnings=[stderr or "Pi SDK bridge exited with a non-zero status."],
+                message=PI_TIMEOUT_USER_MESSAGE,
+                warnings=["Pi RPC read timeout while streaming."],
                 consulted_pages=consulted_pages,
                 history_length=prepared["history_length"],
             )
         )
+        return
+    except PiRpcError as exc:
+        logger.exception("Pi RPC stream failed")
+        yield _pi_error_event(
+            _pi_error_response(
+                message=f"Pi RPC 调用失败：{exc}",
+                warnings=[str(exc)],
+                consulted_pages=consulted_pages,
+                history_length=prepared["history_length"],
+            )
+        )
+        return
+    except Exception as exc:
+        logger.exception("Unexpected Pi RPC stream error")
+        yield _pi_error_event(
+            _pi_error_response(
+                message=f"Pi RPC 未能完成请求：{exc}",
+                warnings=[str(exc)],
+                consulted_pages=consulted_pages,
+                history_length=prepared["history_length"],
+            )
+        )
+        return
+
+    yield _pi_error_event(
+        _pi_error_response(
+            message="Pi RPC 未返回 agent_end 事件，无法确定最终答复。",
+            warnings=["Missing agent_end event from Pi RPC stream."],
+            consulted_pages=consulted_pages,
+            history_length=prepared["history_length"],
+        )
+    )
 
 
-def run_agent_chat(message: str, history: list[dict[str, str]] | None = None) -> dict[str, Any]:
-    return _run_pi_agent_chat(message=message, history=history or [])
+def run_agent_chat(
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    request_id: str | None = None,
+) -> dict[str, Any]:
+    return asyncio.run(
+        _run_pi_rpc_agent_chat_async(
+            message=message,
+            history=history or [],
+            request_id=request_id,
+        )
+    )
 
 
-# ===========================
-# Session 池聊天函数（使用长连接）
-# ===========================
+async def stream_agent_chat(
+    message: str,
+    history: list[dict[str, str]] | None = None,
+    request_id: str | None = None,
+) -> AsyncIterator[dict[str, Any]]:
+    async for event in _stream_pi_rpc_chat(
+        message=message,
+        history=history or [],
+        request_id=request_id,
+    ):
+        yield event
+
 
 def run_session_chat(
     session_id: str,
@@ -415,18 +521,6 @@ def run_session_chat(
     history: list[dict[str, str]] | None = None,
     request_id: str | None = None,
 ) -> dict[str, Any]:
-    """
-    使用 Session 池进行聊天（同步模式）
-
-    Args:
-        session_id: Session ID
-        message: 用户消息
-        history: 对话历史
-        request_id: 请求 ID
-
-    Returns:
-        聊天响应
-    """
     pool = get_session_pool()
     result = pool.send_message(
         session_id=session_id,
@@ -449,18 +543,6 @@ async def stream_session_chat(
     history: list[dict[str, str]] | None = None,
     request_id: str | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
-    """
-    使用 Session 池进行流式聊天
-
-    Args:
-        session_id: Session ID
-        message: 用户消息
-        history: 对话历史
-        request_id: 请求 ID
-
-    Yields:
-        事件字典
-    """
     pool = get_session_pool()
     async for event in pool.send_message_async(
         session_id=session_id,

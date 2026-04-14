@@ -54,7 +54,8 @@ gogo-app/
 │   │   ├── agent_service.py       # Agent 推理服务
 │   │   ├── config.py              # 配置管理
 │   │   ├── main.py                # FastAPI 入口
-│   │   ├── pi_sdk_bridge.mjs      # Pi SDK 桥接
+│   │   ├── session_manager.py     # Session 管理（RPC 会话）
+│   │   ├── pi_rpc_client.py       # Pi RPC 客户端
 │   │   ├── raw_service.py         # Raw 材料服务
 │   │   ├── wiki_service.py        # Wiki 知识服务
 │   │   ├── write_service.py       # 知识写回服务（新增）
@@ -315,13 +316,12 @@ AUTO_CONTRIBUTE_ENABLED = os.getenv("AUTO_CONTRIBUTE_ENABLED", "true").lower() =
 SYNC_FREQUENCY = os.getenv("SYNC_FREQUENCY", "daily")  # daily, weekly
 ```
 
-### `pi_sdk_bridge.mjs`（保留）
+### `session_manager.py` + `pi_rpc_client.py`（RPC 主链路）
 
 **职责**：
-- 由 Python 子进程调用
-- 使用 Pi SDK 创建临时 session
-- 以个人知识库目录为工作区
-- 订阅 Pi session 事件，输出文本增量、原始 thinking 增量与过程 trace
+- `session_manager.py`：会话创建/切换/删除、并发互斥、历史恢复
+- `pi_rpc_client.py`：`pi --mode rpc` 通讯、事件流读取、命令响应关联
+- 以个人知识库目录为工作区，输出文本增量、thinking 增量与过程 trace
 
 ## 数据流
 

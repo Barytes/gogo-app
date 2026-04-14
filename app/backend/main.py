@@ -130,7 +130,7 @@ def chat_suggestions() -> dict[str, list[str]]:
 @app.post("/api/chat")
 def chat(request: ChatRequest) -> dict[str, object]:
     request_id = _resolve_request_id(request.request_id)
-    # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
+    # 如果提供了 session_id，使用 Session 池；否则走单次聊天链路
     if request.session_id:
         result = run_session_chat(
             session_id=request.session_id,
@@ -143,6 +143,7 @@ def chat(request: ChatRequest) -> dict[str, object]:
     result = run_agent_chat(
         message=request.message,
         history=[_dump_turn(turn) for turn in request.history],
+        request_id=request_id,
     )
     result["request_id"] = request_id
     return result
@@ -153,7 +154,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
     history = [_dump_turn(turn) for turn in request.history]
     request_id = _resolve_request_id(request.request_id)
 
-    # 如果提供了 session_id，使用 session 池；否则使用旧的单次运行模式
+    # 如果提供了 session_id，使用 Session 池；否则走单次聊天链路
     if request.session_id:
         async def session_event_stream():
             async for event in stream_session_chat(
@@ -170,6 +171,7 @@ async def chat_stream(request: ChatRequest) -> StreamingResponse:
         async for event in stream_agent_chat(
             message=request.message,
             history=history,
+            request_id=request_id,
         ):
             event.setdefault("request_id", request_id)
             yield f"{json.dumps(event, ensure_ascii=False)}\n"
@@ -261,10 +263,11 @@ def create_session(request: CreateSessionRequest) -> dict[str, object]:
     pool = get_session_pool()
     session_id = pool.create_session(
         system_prompt=request.system_prompt or None,
+        title=request.title or None,
     )
     session = pool.get_session(session_id)
-    if request.title:
-        session.info.title = request.title
+    if not session:
+        raise HTTPException(status_code=500, detail="Session created but not found in pool")
     return {"session_id": session_id, "session": session.info.to_dict()}
 
 
@@ -291,7 +294,7 @@ def get_session_history(
     session_id: str,
     limit: int = Query(200, ge=1, le=1000, description="最大返回 turn 数（user+assistant）"),
 ) -> dict[str, object]:
-    """从本地 JSONL 事件存储中回放会话历史。"""
+    """回放会话历史（优先 RPC get_messages，离线兜底原生 session JSONL）。"""
     if "/" in session_id or "\\" in session_id or ".." in session_id:
         raise HTTPException(status_code=400, detail="Invalid session_id format")
     pool = get_session_pool()

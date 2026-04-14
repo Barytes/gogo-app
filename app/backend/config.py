@@ -19,8 +19,15 @@ def get_knowledge_base_dir() -> Path:
     return base_dir.resolve()
 
 
-def get_pi_node_command() -> str:
-    return os.getenv("PI_NODE_COMMAND", "node").strip() or "node"
+def get_pi_command() -> str:
+    return os.getenv("PI_COMMAND", "pi").strip() or "pi"
+
+
+def get_pi_command_path() -> str | None:
+    configured = shutil.which(get_pi_command())
+    if configured:
+        return configured
+    return shutil.which("pi")
 
 
 def get_pi_timeout_seconds() -> int:
@@ -46,19 +53,8 @@ def get_pi_workdir() -> Path:
     return get_knowledge_base_dir()
 
 
-def get_pi_node_command_path() -> str | None:
-    configured = shutil.which(get_pi_node_command())
-    if configured:
-        return configured
-    return shutil.which("node")
-
-
-def get_pi_sdk_bridge_path() -> Path:
-    return APP_ROOT / "app" / "backend" / "pi_sdk_bridge.mjs"
-
-
-def get_session_event_store_dir() -> Path:
-    raw_path = os.getenv("SESSION_EVENT_STORE_DIR")
+def get_pi_rpc_session_dir() -> Path:
+    raw_path = os.getenv("PI_RPC_SESSION_DIR")
     if raw_path:
         return Path(raw_path).expanduser().resolve()
-    return (APP_ROOT.parent / ".gogo-sessions").resolve()
+    return (APP_ROOT.parent / ".gogo" / "pi-rpc-sessions").resolve()

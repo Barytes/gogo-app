@@ -10,10 +10,9 @@ When any mapped code file changes, update the mapped document(s) in the same cha
 
 | Doc | Code Files |
 |---|---|
-| `docs/pi-sdk-bridge-architecture.md` | `app/backend/pi_sdk_bridge.mjs` |
-| `docs/session-management.md` | `app/frontend/assets/chat.js`, `app/backend/main.py`, `app/backend/session_manager.py`, `app/backend/pi_sdk_bridge.mjs` |
-| `docs/agent-architecture.md` | `app/backend/agent_service.py`, `app/backend/pi_sdk_bridge.mjs` |
-| `docs/agent-session-refactor-assessment.md` | `app/backend/agent_service.py`, `app/backend/session_manager.py`, `app/backend/pi_sdk_bridge.mjs`, `app/backend/session_event_store.py` |
+| `docs/session-management.md` | `app/frontend/assets/chat.js`, `app/backend/main.py`, `app/backend/session_manager.py`, `app/backend/pi_rpc_client.py`, `app/backend/config.py` |
+| `docs/agent-architecture.md` | `app/backend/agent_service.py`, `app/backend/session_manager.py`, `app/backend/pi_rpc_client.py`, `app/backend/config.py` |
+| `docs/agent-session-refactor-assessment.md` | `app/backend/agent_service.py`, `app/backend/session_manager.py`, `app/backend/pi_rpc_client.py`, `app/backend/config.py` |
 
 ## How to Extend
 

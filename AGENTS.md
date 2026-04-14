@@ -75,7 +75,7 @@ If you implement a feature described in `TASKS.md`:
 
 `docs/agent-architecture.md` describes the Agent service implementation in detail.
 
-**Whenever `app/backend/agent_service.py` or `app/backend/pi_sdk_bridge.mjs` is modified:**
+**Whenever `app/backend/agent_service.py`, `app/backend/session_manager.py`, or `app/backend/pi_rpc_client.py` is modified:**
 - Update `docs/agent-architecture.md` to reflect the changes
 - Keep the "当前实现状态" section accurate
 - Update the "与架构的差距" table if gaps change
@@ -83,7 +83,7 @@ If you implement a feature described in `TASKS.md`:
 
 This document should be treated as a living specification that always matches the current code.
 
-### Rule 6: Session/Bridge Docs Must Match Code
+### Rule 6: Session/Agent Docs Must Match Code
 
 Code explanation documents and their corresponding code files are centrally maintained in:
 
@@ -93,7 +93,7 @@ Code explanation documents and their corresponding code files are centrally main
 
 ### Rule 7: Pi-Related Changes Must Reference Local Pi Docs
 
-When working on Pi-related implementation (e.g. `app/backend/pi_sdk_bridge.mjs`, session behavior, RPC/SDK usage):
+When working on Pi-related implementation (e.g. RPC session behavior, RPC/SDK usage):
 
 - Consult `docs/pi/` first as the primary reference.
 - If behavior differs from current code, document the gap in architecture/task docs before changing implementation.
@@ -132,7 +132,8 @@ gogo-app/
 │   │   ├── main.py           # FastAPI entry point
 │   │   ├── config.py         # Configuration
 │   │   ├── agent_service.py  # Agent chat service
-│   │   ├── pi_sdk_bridge.mjs # Pi SDK bridge
+│   │   ├── session_manager.py # Session lifecycle and persistence
+│   │   ├── pi_rpc_client.py # Pi RPC transport client
 │   │   ├── wiki_service.py   # Wiki knowledge service
 │   │   ├── raw_service.py    # Raw material service
 │   │   ├── write_service.py  # (TODO) Write-back service
