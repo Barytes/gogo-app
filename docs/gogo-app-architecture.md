@@ -174,3 +174,5 @@ Browser
 - [agent-architecture.md](agent-architecture.md) - gogo-app 中 Agent 后端实现细节
 - [session-management.md](session-management.md) - gogo-app 中 Session 管理与恢复机制
 - [frontend-workbench-elements.md](frontend-workbench-elements.md) - gogo-app 前端页面元素、状态与交互实现说明
+- [desktop-packaging-options.md](desktop-packaging-options.md) - gogo-app 桌面应用封装方案评估与推荐路线
+- [electron-packaging-guide.md](electron-packaging-guide.md) - gogo-app Electron 封装实施指南
