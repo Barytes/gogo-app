@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Research KB MVP</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260415-2" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260415-4" />
   </head>
   <body>
     <div class="site-shell app-shell">
@@ -150,6 +150,12 @@
 
               <div id="messages" class="messages"></div>
 	              <form id="chat-form" class="chat-form">
+	                <input
+	                  id="chat-upload-input"
+	                  type="file"
+	                  hidden
+	                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
+	                />
 	                <div class="chat-input-shell">
 	                  <div class="chat-composer-controls">
 	                    <button
@@ -247,8 +253,8 @@
 	      </div>
 	    </div>
 
-	    <script src="/assets/workbench.js?v=20260415-2"></script>
-	    <script src="/assets/wiki.js?v=20260415-2"></script>
-	    <script src="/assets/chat.js?v=20260415-2"></script>
+	    <script src="/assets/workbench.js?v=20260415-4"></script>
+	    <script src="/assets/wiki.js?v=20260415-4"></script>
+	    <script src="/assets/chat.js?v=20260415-4"></script>
   </body>
 </html>

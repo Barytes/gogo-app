@@ -1098,6 +1098,31 @@ body.layout-chat .unified-chat-panel {
   line-height: 1;
 }
 
+body.layout-wiki .chat-control-menu-shell .chat-control-button {
+  width: 38px;
+  min-width: 38px;
+  padding-left: 0;
+  padding-right: 0;
+  justify-content: center;
+  color: transparent;
+  font-size: 0;
+}
+
+body.layout-wiki #chat-model-button::before,
+body.layout-wiki #chat-thinking-button::before {
+  color: var(--text);
+  font-size: 1rem;
+  line-height: 1;
+}
+
+body.layout-wiki #chat-model-button::before {
+  content: "◈";
+}
+
+body.layout-wiki #chat-thinking-button::before {
+  content: "✦";
+}
+
 .chat-control-menu {
   position: absolute;
   left: 0;

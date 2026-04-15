@@ -4,9 +4,10 @@ from contextlib import asynccontextmanager
 import logging
 from pathlib import Path
 import json
+from urllib.parse import unquote
 import uuid
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,6 +37,27 @@ NO_SESSION_DEPRECATION_MESSAGE = (
 NO_SESSION_DEPRECATION_HEADERS = {
     "Deprecation": "true",
     "Warning": f'299 gogo-app "{NO_SESSION_DEPRECATION_MESSAGE}"',
+}
+UPLOAD_MAX_BYTES = 50 * 1024 * 1024
+ALLOWED_UPLOAD_EXTENSIONS = {
+    ".pdf",
+    ".md",
+    ".txt",
+    ".doc",
+    ".docx",
+    ".ppt",
+    ".pptx",
+    ".xls",
+    ".xlsx",
+    ".csv",
+    ".tsv",
+    ".json",
+    ".yaml",
+    ".yml",
+    ".png",
+    ".jpg",
+    ".jpeg",
+    ".webp",
 }
 
 
@@ -144,6 +166,49 @@ def _frontend_file_response(path: Path) -> FileResponse:
     )
 
 
+def _safe_inbox_filename(raw_name: str) -> str:
+    filename = Path(str(raw_name or "").strip()).name
+    if not filename or filename in {".", ".."}:
+        raise HTTPException(status_code=400, detail="上传文件缺少有效文件名。")
+    suffix = Path(filename).suffix.lower()
+    if suffix not in ALLOWED_UPLOAD_EXTENSIONS:
+        allowed = ", ".join(sorted(ALLOWED_UPLOAD_EXTENSIONS))
+        raise HTTPException(
+            status_code=400,
+            detail=f"暂不支持该文件类型。支持的扩展名：{allowed}",
+        )
+    return filename
+
+
+def _allocate_inbox_path(inbox_dir: Path, filename: str) -> Path:
+    candidate = inbox_dir / filename
+    if not candidate.exists():
+        return candidate
+    stem = Path(filename).stem
+    suffix = Path(filename).suffix
+    for index in range(1, 1000):
+        next_candidate = inbox_dir / f"{stem}-{index}{suffix}"
+        if not next_candidate.exists():
+            return next_candidate
+    raise HTTPException(status_code=500, detail="无法为上传文件分配唯一文件名。")
+
+
+def _build_ingest_prompt(inbox_relative_path: str, knowledge_base_name: str) -> str:
+    return "\n".join(
+        [
+            f"请按照当前知识库 `{knowledge_base_name}` 的 ingest schema 处理新上传文件 `{inbox_relative_path}`。",
+            "",
+            "要求：",
+            "1. 先阅读 `AGENTS.md`、`COMMUNICATION.md` 和 `schemas/ingest.md`。",
+            "2. 阅读并分类该文件，判断它属于 `paper`、`project`、`meeting` 或 `experiment`。",
+            "3. 按 `schemas/ingest.md` 的规则，将源文件保留或移动到合适的 `raw/` 子目录；如果暂时无法确定，请说明原因并保留在 `inbox/`。",
+            "4. 优先更新已有的 `wiki/knowledge/` 页面；只有在材料改变了稳定研究判断时才更新 `wiki/insights/`。",
+            "5. 在 `wiki/log.md` 追加一条简短的 ingest/update 记录。",
+            "6. 最后告诉我你读取了什么、更新了哪些文件、还有哪些地方需要人工确认。",
+        ]
+    )
+
+
 @app.get("/", include_in_schema=False)
 def landing_page() -> FileResponse:
     return _frontend_file_response(FRONTEND_DIR / "index.html")
@@ -202,6 +267,67 @@ def chat_suggestions() -> dict[str, list[str]]:
             "帮我总结 knowledge-base/wiki 的结构。",
             "如果我要接入真实 agent，后端应该怎么替换？",
         ]
+    }
+
+
+@app.post("/api/knowledge-base/inbox/upload")
+async def upload_inbox_file(request: Request) -> dict[str, object]:
+    kb_dir = get_knowledge_base_dir()
+    if not kb_dir.exists() or not kb_dir.is_dir():
+        raise HTTPException(status_code=400, detail="当前知识库目录不存在，无法上传文件。")
+
+    inbox_dir = kb_dir / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    encoded_filename = request.headers.get("x-gogo-filename", "")
+    filename = _safe_inbox_filename(unquote(encoded_filename))
+    target_path = _allocate_inbox_path(inbox_dir, filename)
+
+    total_bytes = 0
+    try:
+        with target_path.open("wb") as handle:
+            async for chunk in request.stream():
+                if not chunk:
+                    continue
+                total_bytes += len(chunk)
+                if total_bytes > UPLOAD_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"上传文件过大，当前限制为 {UPLOAD_MAX_BYTES // (1024 * 1024)}MB。",
+                    )
+                handle.write(chunk)
+    except HTTPException:
+        if target_path.exists():
+            target_path.unlink()
+        raise
+    except Exception as exc:
+        if target_path.exists():
+            target_path.unlink()
+        raise HTTPException(status_code=500, detail=f"上传文件失败：{exc}") from exc
+
+    if total_bytes <= 0:
+        if target_path.exists():
+            target_path.unlink()
+        raise HTTPException(status_code=400, detail="上传文件为空，无法 ingest。")
+
+    kb_settings = get_knowledge_base_settings()
+    inbox_relative_path = f"inbox/{target_path.name}"
+    return {
+        "success": True,
+        "knowledge_base": kb_settings,
+        "file": {
+            "name": target_path.name,
+            "path": inbox_relative_path,
+            "size_bytes": total_bytes,
+        },
+        "limits": {
+            "max_bytes": UPLOAD_MAX_BYTES,
+            "allowed_extensions": sorted(ALLOWED_UPLOAD_EXTENSIONS),
+        },
+        "ingest_prompt": _build_ingest_prompt(
+            inbox_relative_path=inbox_relative_path,
+            knowledge_base_name=str(kb_settings.get("name") or Path(kb_dir).name),
+        ),
+        "detail": f"文件已上传到 `{inbox_relative_path}`，可以把生成的 ingest 提示词发给 Pi。",
     }
 
 

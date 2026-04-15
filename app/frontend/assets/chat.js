@@ -4,6 +4,7 @@ const inputEl = document.querySelector("#chat-input");
 const submitButtonEl = formEl?.querySelector("button[type='submit']");
 const submitIconEl = submitButtonEl?.querySelector(".chat-submit-icon");
 const uploadButtonEl = document.querySelector("#chat-upload-button");
+const uploadInputEl = document.querySelector("#chat-upload-input");
 const modelButtonEl = document.querySelector("#chat-model-button");
 const modelMenuEl = document.querySelector("#chat-model-menu");
 const thinkingButtonEl = document.querySelector("#chat-thinking-button");
@@ -14,7 +15,7 @@ const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
-const CHAT_UI_VERSION = "2026-04-15.1";
+const CHAT_UI_VERSION = "2026-04-15.2";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -66,6 +67,7 @@ let draftChatSettings = {
 };
 let openChatControlMenu = null;
 let settingsHintTimer = null;
+let isUploadingInboxFile = false;
 
 function applySessionSidebarState(collapsed) {
   document.body.classList.toggle("session-sidebar-collapsed", Boolean(collapsed));
@@ -281,15 +283,17 @@ function refreshChatControls() {
   if (modelButtonEl) {
     modelButtonEl.textContent = currentModelButtonText();
     modelButtonEl.title = currentModelButtonText();
+    modelButtonEl.setAttribute("aria-label", `当前模型：${currentModelButtonText()}`);
     modelButtonEl.disabled = disabled || availableModels.length === 0;
   }
   if (thinkingButtonEl) {
     thinkingButtonEl.textContent = currentThinkingButtonText();
     thinkingButtonEl.title = currentThinkingButtonText();
+    thinkingButtonEl.setAttribute("aria-label", `当前思考水平：${currentThinkingButtonText()}`);
     thinkingButtonEl.disabled = disabled || availableThinkingLevels.length === 0;
   }
   if (uploadButtonEl) {
-    uploadButtonEl.disabled = disabled;
+    uploadButtonEl.disabled = disabled || isUploadingInboxFile;
   }
 
   renderChatControlMenus();
@@ -1453,6 +1457,50 @@ async function extractErrorMessage(response) {
   return `HTTP ${response.status}`;
 }
 
+async function uploadInboxFile(file) {
+  if (!file) {
+    return;
+  }
+
+  isUploadingInboxFile = true;
+  refreshChatControls();
+
+  try {
+    const response = await fetch("/api/knowledge-base/inbox/upload", {
+      method: "POST",
+      headers: {
+        "Content-Type": file.type || "application/octet-stream",
+        "X-Gogo-Filename": encodeURIComponent(file.name || "upload.bin"),
+      },
+      body: file,
+    });
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+
+    const payload = await response.json();
+    const filePath = String(payload?.file?.path || file.name || "inbox/未命名文件");
+    const prompt = String(payload?.ingest_prompt || "").trim();
+    if (prompt) {
+      injectPrompt(prompt, false);
+    }
+    appendMessage(
+      "assistant",
+      `文件已上传到 \`${filePath}\`。我已经把 ingest 提示词放进输入框里，你确认后发送给 Pi 就可以开始按 schema ingest。`
+    );
+    showSettingsHint(`已上传到 ${filePath}`);
+  } catch (error) {
+    console.error("Failed to upload inbox file:", error);
+    appendMessage("assistant", `上传文件失败：${error.message}`);
+  } finally {
+    isUploadingInboxFile = false;
+    if (uploadInputEl) {
+      uploadInputEl.value = "";
+    }
+    refreshChatControls();
+  }
+}
+
 function renderSessionList() {
   if (!sessionListEl) {
     return;
@@ -2115,7 +2163,19 @@ document.addEventListener("keydown", (event) => {
 });
 
 uploadButtonEl?.addEventListener("click", () => {
-  appendMessage("assistant", "上传文件与 ingest 入口还没接后端流程，这里先把按钮位置留好了。");
+  if (uploadButtonEl.disabled || !uploadInputEl) {
+    return;
+  }
+  uploadInputEl.value = "";
+  uploadInputEl.click();
+});
+
+uploadInputEl?.addEventListener("change", async () => {
+  const file = uploadInputEl.files?.[0];
+  if (!file) {
+    return;
+  }
+  await uploadInboxFile(file);
 });
 
 modelButtonEl?.addEventListener("click", () => {
