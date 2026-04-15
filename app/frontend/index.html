@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Research KB MVP</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260415-4" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260415-6" />
   </head>
   <body>
     <div class="site-shell app-shell">
@@ -154,6 +154,7 @@
 	                  id="chat-upload-input"
 	                  type="file"
 	                  hidden
+	                  multiple
 	                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
 	                />
 	                <div class="chat-input-shell">
@@ -210,6 +211,10 @@
       </main>
 
 	      <div class="floating-dock">
+	        <button id="toggle-inbox-panel" class="button button-primary inbox-dock-button" type="button">
+	          Inbox
+	          <span id="inbox-count-badge" class="inbox-count-badge">0</span>
+	        </button>
         <button id="show-wiki-panel" class="button button-primary hidden" type="button">
           打开 Wiki
         </button>
@@ -217,6 +222,24 @@
 	          打开 Chat
 	        </button>
 	      </div>
+
+	      <aside id="inbox-panel" class="inbox-panel hidden" aria-label="Inbox 文件列表">
+	        <div class="inbox-panel-header">
+	          <div>
+	            <p class="eyebrow">Inbox</p>
+	            <h2>待 ingest 文件</h2>
+	          </div>
+	          <div class="inbox-panel-actions">
+	            <button id="refresh-inbox-panel" class="button button-secondary" type="button">刷新</button>
+	            <button id="ingest-inbox-panel" class="button button-primary" type="button">ingest</button>
+	            <button id="close-inbox-panel" class="button button-secondary" type="button">关闭</button>
+	          </div>
+	        </div>
+	        <p id="inbox-panel-feedback" class="inbox-panel-feedback hidden" aria-live="polite"></p>
+	        <p class="inbox-panel-drop-hint">把文件拖到这个面板，或拖到右下角 Inbox 按钮，也可以直接上传。</p>
+	        <div id="inbox-file-list" class="inbox-file-list"></div>
+	        <p id="inbox-file-empty" class="inbox-file-empty hidden">当前知识库的 inbox 里还没有文件。</p>
+	      </aside>
 
 	      <div id="settings-overlay" class="settings-overlay hidden">
 	        <section class="settings-panel" role="dialog" aria-modal="true" aria-labelledby="settings-panel-title">
@@ -253,8 +276,8 @@
 	      </div>
 	    </div>
 
-	    <script src="/assets/workbench.js?v=20260415-4"></script>
-	    <script src="/assets/wiki.js?v=20260415-4"></script>
-	    <script src="/assets/chat.js?v=20260415-4"></script>
+	    <script src="/assets/workbench.js?v=20260415-7"></script>
+	    <script src="/assets/wiki.js?v=20260415-7"></script>
+	    <script src="/assets/chat.js?v=20260415-7"></script>
   </body>
 </html>

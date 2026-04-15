@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from contextlib import asynccontextmanager
+from datetime import datetime
 import logging
 from pathlib import Path
 import json
@@ -194,19 +195,80 @@ def _allocate_inbox_path(inbox_dir: Path, filename: str) -> Path:
 
 
 def _build_ingest_prompt(inbox_relative_path: str, knowledge_base_name: str) -> str:
-    return "\n".join(
-        [
-            f"请按照当前知识库 `{knowledge_base_name}` 的 ingest schema 处理新上传文件 `{inbox_relative_path}`。",
-            "",
-            "要求：",
-            "1. 先阅读 `AGENTS.md`、`COMMUNICATION.md` 和 `schemas/ingest.md`。",
-            "2. 阅读并分类该文件，判断它属于 `paper`、`project`、`meeting` 或 `experiment`。",
-            "3. 按 `schemas/ingest.md` 的规则，将源文件保留或移动到合适的 `raw/` 子目录；如果暂时无法确定，请说明原因并保留在 `inbox/`。",
-            "4. 优先更新已有的 `wiki/knowledge/` 页面；只有在材料改变了稳定研究判断时才更新 `wiki/insights/`。",
-            "5. 在 `wiki/log.md` 追加一条简短的 ingest/update 记录。",
-            "6. 最后告诉我你读取了什么、更新了哪些文件、还有哪些地方需要人工确认。",
-        ]
-    )
+    return f"请ingest一下inbox的内容。"
+
+
+def _inbox_type_info(path: Path) -> tuple[str, str]:
+    suffix = path.suffix.lower()
+    if suffix == ".pdf":
+        return "paper_candidate", "PDF / 论文或资料"
+    if suffix in {".md", ".txt"}:
+        return "notes", "Markdown / 文本"
+    if suffix in {".doc", ".docx"}:
+        return "document", "文档"
+    if suffix in {".ppt", ".pptx"}:
+        return "slides", "Slides"
+    if suffix in {".xls", ".xlsx", ".csv", ".tsv"}:
+        return "table", "表格 / 数据"
+    if suffix in {".json", ".yaml", ".yml"}:
+        return "structured", "结构化文件"
+    if suffix in {".png", ".jpg", ".jpeg", ".webp"}:
+        return "image", "图片"
+    return "unknown", "待分类"
+
+
+def _should_show_inbox_file(path: Path, *, inbox_dir: Path) -> bool:
+    name = path.name.strip()
+    if not name:
+        return False
+    if name.startswith("."):
+        return False
+    relative = path.relative_to(inbox_dir)
+    if len(relative.parts) == 1 and name.lower() == "readme.md":
+        return False
+    return True
+
+
+def _inbox_item_payload(path: Path, *, inbox_dir: Path, knowledge_base_name: str) -> dict[str, object]:
+    stat = path.stat()
+    relative = f"inbox/{path.relative_to(inbox_dir).as_posix()}"
+    kind, type_label = _inbox_type_info(path)
+    return {
+        "name": path.name,
+        "path": relative,
+        "kind": kind,
+        "type_label": type_label,
+        "extension": path.suffix.lower(),
+        "size_bytes": stat.st_size,
+        "modified_at": datetime.fromtimestamp(stat.st_mtime).isoformat(),
+        "status": "pending",
+        "status_label": "待 ingest",
+        "ingest_prompt": _build_ingest_prompt(
+            inbox_relative_path=relative,
+            knowledge_base_name=knowledge_base_name,
+        ),
+    }
+
+
+def _resolve_inbox_path(raw_path: str, *, inbox_dir: Path) -> Path:
+    candidate = str(raw_path or "").strip()
+    if not candidate:
+        raise HTTPException(status_code=400, detail="缺少待删除的 inbox 文件路径。")
+
+    if candidate.startswith("inbox/"):
+        candidate = candidate[len("inbox/") :]
+
+    resolved = (inbox_dir / Path(candidate)).resolve()
+    inbox_root = inbox_dir.resolve()
+    try:
+        resolved.relative_to(inbox_root)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="非法的 inbox 文件路径。") from exc
+
+    if not resolved.exists() or not resolved.is_file():
+        raise HTTPException(status_code=404, detail="指定的 inbox 文件不存在。")
+
+    return resolved
 
 
 @app.get("/", include_in_schema=False)
@@ -314,11 +376,11 @@ async def upload_inbox_file(request: Request) -> dict[str, object]:
     return {
         "success": True,
         "knowledge_base": kb_settings,
-        "file": {
-            "name": target_path.name,
-            "path": inbox_relative_path,
-            "size_bytes": total_bytes,
-        },
+        "file": _inbox_item_payload(
+            target_path,
+            inbox_dir=inbox_dir,
+            knowledge_base_name=str(kb_settings.get("name") or Path(kb_dir).name),
+        ),
         "limits": {
             "max_bytes": UPLOAD_MAX_BYTES,
             "allowed_extensions": sorted(ALLOWED_UPLOAD_EXTENSIONS),
@@ -328,6 +390,64 @@ async def upload_inbox_file(request: Request) -> dict[str, object]:
             knowledge_base_name=str(kb_settings.get("name") or Path(kb_dir).name),
         ),
         "detail": f"文件已上传到 `{inbox_relative_path}`，可以把生成的 ingest 提示词发给 Pi。",
+    }
+
+
+@app.get("/api/knowledge-base/inbox/files")
+def inbox_files() -> dict[str, object]:
+    kb_dir = get_knowledge_base_dir()
+    inbox_dir = kb_dir / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+    kb_settings = get_knowledge_base_settings()
+    knowledge_base_name = str(kb_settings.get("name") or Path(kb_dir).name)
+
+    items: list[dict[str, object]] = []
+    for path in sorted(
+        [
+            item
+            for item in inbox_dir.rglob("*")
+            if item.is_file() and _should_show_inbox_file(item, inbox_dir=inbox_dir)
+        ],
+        key=lambda item: item.stat().st_mtime,
+        reverse=True,
+    ):
+        items.append(
+            _inbox_item_payload(
+                path,
+                inbox_dir=inbox_dir,
+                knowledge_base_name=knowledge_base_name,
+            )
+        )
+
+    return {
+        "knowledge_base": kb_settings,
+        "items": items,
+        "count": len(items),
+    }
+
+
+@app.delete("/api/knowledge-base/inbox/files")
+def delete_inbox_file(path: str = Query(..., min_length=1, description="Inbox 相对路径")) -> dict[str, object]:
+    kb_dir = get_knowledge_base_dir()
+    inbox_dir = kb_dir / "inbox"
+    inbox_dir.mkdir(parents=True, exist_ok=True)
+
+    target_path = _resolve_inbox_path(path, inbox_dir=inbox_dir)
+    relative_path = f"inbox/{target_path.relative_to(inbox_dir).as_posix()}"
+    target_path.unlink()
+
+    for parent in target_path.parents:
+        if parent == inbox_dir:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+
+    return {
+        "success": True,
+        "deleted_path": relative_path,
+        "detail": f"已从 inbox 删除 `{relative_path}`。",
     }
 
 

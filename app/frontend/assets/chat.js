@@ -5,6 +5,15 @@ const submitButtonEl = formEl?.querySelector("button[type='submit']");
 const submitIconEl = submitButtonEl?.querySelector(".chat-submit-icon");
 const uploadButtonEl = document.querySelector("#chat-upload-button");
 const uploadInputEl = document.querySelector("#chat-upload-input");
+const toggleInboxPanelButtonEl = document.querySelector("#toggle-inbox-panel");
+const inboxCountBadgeEl = document.querySelector("#inbox-count-badge");
+const inboxPanelEl = document.querySelector("#inbox-panel");
+const closeInboxPanelButtonEl = document.querySelector("#close-inbox-panel");
+const refreshInboxPanelButtonEl = document.querySelector("#refresh-inbox-panel");
+const ingestInboxPanelButtonEl = document.querySelector("#ingest-inbox-panel");
+const inboxPanelFeedbackEl = document.querySelector("#inbox-panel-feedback");
+const inboxFileListEl = document.querySelector("#inbox-file-list");
+const inboxFileEmptyEl = document.querySelector("#inbox-file-empty");
 const modelButtonEl = document.querySelector("#chat-model-button");
 const modelMenuEl = document.querySelector("#chat-model-menu");
 const thinkingButtonEl = document.querySelector("#chat-thinking-button");
@@ -15,7 +24,7 @@ const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
-const CHAT_UI_VERSION = "2026-04-15.2";
+const CHAT_UI_VERSION = "2026-04-15.4";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
@@ -68,6 +77,14 @@ let draftChatSettings = {
 let openChatControlMenu = null;
 let settingsHintTimer = null;
 let isUploadingInboxFile = false;
+let inboxFiles = [];
+let inboxPanelOpen = false;
+let inboxLoading = false;
+let highlightedInboxPath = "";
+let inboxDragActive = false;
+let inboxDragDepth = 0;
+const inboxDeletingPaths = new Set();
+const INBOX_INGEST_PROMPT = "请ingest一下inbox的内容。";
 
 function applySessionSidebarState(collapsed) {
   document.body.classList.toggle("session-sidebar-collapsed", Boolean(collapsed));
@@ -214,6 +231,350 @@ function refreshSettingsHintState() {
   if (settingsHintTimer) {
     window.clearTimeout(settingsHintTimer);
     settingsHintTimer = null;
+  }
+}
+
+function formatInboxFileSize(sizeBytes) {
+  const size = Number(sizeBytes || 0);
+  if (!Number.isFinite(size) || size <= 0) {
+    return "0 B";
+  }
+  if (size < 1024) {
+    return `${size} B`;
+  }
+  if (size < 1024 * 1024) {
+    return `${(size / 1024).toFixed(size >= 10 * 1024 ? 0 : 1)} KB`;
+  }
+  return `${(size / (1024 * 1024)).toFixed(size >= 10 * 1024 * 1024 ? 0 : 1)} MB`;
+}
+
+function formatInboxModifiedAt(rawValue) {
+  const text = String(rawValue || "").trim();
+  if (!text) {
+    return "";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return text;
+  }
+  return date.toLocaleString("zh-CN", {
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function setInboxFeedback(message, isError = false) {
+  if (!inboxPanelFeedbackEl) {
+    return;
+  }
+  if (!message) {
+    inboxPanelFeedbackEl.textContent = "";
+    inboxPanelFeedbackEl.classList.add("hidden");
+    inboxPanelFeedbackEl.style.color = "";
+    return;
+  }
+  inboxPanelFeedbackEl.textContent = message;
+  inboxPanelFeedbackEl.classList.remove("hidden");
+  inboxPanelFeedbackEl.style.color = isError ? "#b1532f" : "#185c52";
+}
+
+function inboxStatusLabel(file) {
+  if (inboxDeletingPaths.has(file.path)) {
+    return "删除中";
+  }
+  return String(file.status_label || "待 ingest");
+}
+
+function renderInboxPanel() {
+  if (toggleInboxPanelButtonEl) {
+    toggleInboxPanelButtonEl.setAttribute("aria-expanded", String(inboxPanelOpen));
+  }
+  if (inboxPanelEl) {
+    inboxPanelEl.classList.toggle("hidden", !inboxPanelOpen);
+    inboxPanelEl.classList.toggle("is-drop-target", inboxDragActive);
+  }
+  if (toggleInboxPanelButtonEl) {
+    toggleInboxPanelButtonEl.classList.toggle("is-drop-target", inboxDragActive);
+  }
+  if (inboxCountBadgeEl) {
+    inboxCountBadgeEl.textContent = String(inboxFiles.length);
+  }
+  if (refreshInboxPanelButtonEl) {
+    refreshInboxPanelButtonEl.disabled = inboxLoading || isUploadingInboxFile;
+  }
+  if (ingestInboxPanelButtonEl) {
+    ingestInboxPanelButtonEl.disabled = inboxLoading || isUploadingInboxFile || inboxFiles.length === 0;
+  }
+  if (!inboxFileListEl || !inboxFileEmptyEl) {
+    return;
+  }
+
+  inboxFileListEl.innerHTML = "";
+  if (inboxLoading) {
+    const loading = document.createElement("p");
+    loading.className = "inbox-file-empty";
+    loading.textContent = "正在读取当前知识库的 inbox...";
+    inboxFileListEl.appendChild(loading);
+    inboxFileEmptyEl.classList.add("hidden");
+    return;
+  }
+
+  if (!inboxFiles.length) {
+    inboxFileEmptyEl.classList.remove("hidden");
+    return;
+  }
+  inboxFileEmptyEl.classList.add("hidden");
+
+  inboxFiles.forEach((file) => {
+    const card = document.createElement("article");
+    card.className = "inbox-file-card";
+    if (highlightedInboxPath && highlightedInboxPath === file.path) {
+      card.classList.add("is-highlighted");
+    }
+
+    const main = document.createElement("div");
+    main.className = "inbox-file-main";
+
+    const top = document.createElement("div");
+    top.className = "inbox-file-top";
+
+    const name = document.createElement("p");
+    name.className = "inbox-file-name";
+    name.textContent = file.name || file.path || "未命名文件";
+
+    const status = document.createElement("span");
+    status.className = "inbox-file-status";
+    status.textContent = inboxStatusLabel(file);
+
+    top.appendChild(name);
+    top.appendChild(status);
+    main.appendChild(top);
+
+    const meta = document.createElement("div");
+    meta.className = "inbox-file-meta";
+    [file.type_label, formatInboxFileSize(file.size_bytes), formatInboxModifiedAt(file.modified_at)]
+      .filter(Boolean)
+      .forEach((label) => {
+        const chip = document.createElement("span");
+        chip.className = "inbox-file-chip";
+        chip.textContent = label;
+        meta.appendChild(chip);
+      });
+    main.appendChild(meta);
+
+    const path = document.createElement("p");
+    path.className = "inbox-file-path";
+    path.textContent = file.path || "";
+    main.appendChild(path);
+
+    const actions = document.createElement("div");
+    actions.className = "inbox-file-actions";
+
+    const deleteButton = document.createElement("button");
+    deleteButton.type = "button";
+    deleteButton.className = "button button-danger-subtle";
+    deleteButton.textContent = inboxDeletingPaths.has(file.path) ? "删除中..." : "删除";
+    deleteButton.disabled = inboxDeletingPaths.has(file.path);
+    deleteButton.addEventListener("click", async () => {
+      await deleteInboxFile(file);
+    });
+
+    actions.appendChild(deleteButton);
+    card.appendChild(main);
+    card.appendChild(actions);
+    inboxFileListEl.appendChild(card);
+  });
+}
+
+function openInboxPanel() {
+  inboxPanelOpen = true;
+  renderInboxPanel();
+}
+
+function closeInboxPanel() {
+  inboxPanelOpen = false;
+  inboxDragActive = false;
+  inboxDragDepth = 0;
+  renderInboxPanel();
+}
+
+async function fetchInboxFiles() {
+  const response = await fetch("/api/knowledge-base/inbox/files");
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
+  return response.json();
+}
+
+async function refreshInboxFiles({ open = false, highlightPath = "" } = {}) {
+  inboxLoading = true;
+  if (highlightPath) {
+    highlightedInboxPath = highlightPath;
+  }
+  if (open) {
+    inboxPanelOpen = true;
+  }
+  renderInboxPanel();
+
+  try {
+    const payload = await fetchInboxFiles();
+    inboxFiles = Array.isArray(payload?.items) ? payload.items : [];
+    setInboxFeedback("");
+  } catch (error) {
+    console.error("Failed to load inbox files:", error);
+    setInboxFeedback(`Inbox 读取失败：${error.message}`, true);
+  } finally {
+    inboxLoading = false;
+    renderInboxPanel();
+  }
+}
+
+function canUploadInboxFiles() {
+  const isPendingForCurrent = Boolean(currentSessionId && pendingSessionIds.has(currentSessionId));
+  const isAbortingCurrent = Boolean(currentSessionId && abortingSessionIds.has(currentSessionId));
+  return !isUploadingInboxFile && !isPendingForCurrent && !isAbortingCurrent;
+}
+
+function setInboxDragState(active) {
+  inboxDragActive = Boolean(active);
+  renderInboxPanel();
+}
+
+function resetInboxDragState() {
+  inboxDragDepth = 0;
+  setInboxDragState(false);
+}
+
+function eventHasFiles(event) {
+  const types = Array.from(event?.dataTransfer?.types || []);
+  return types.includes("Files");
+}
+
+function getDroppedFiles(fileList) {
+  return Array.from(fileList || []).filter((file) => file && typeof file.name === "string");
+}
+
+async function uploadInboxFiles(fileList) {
+  const files = getDroppedFiles(fileList);
+  if (!files.length) {
+    return;
+  }
+  if (!canUploadInboxFiles()) {
+    openInboxPanel();
+    setInboxFeedback("当前状态下暂时不能上传文件，请等本轮回复结束后再试。", true);
+    showSettingsHint("当前暂时不能上传文件");
+    return;
+  }
+
+  isUploadingInboxFile = true;
+  inboxPanelOpen = true;
+  renderInboxPanel();
+  refreshChatControls();
+
+  const uploadedPaths = [];
+  const failedFiles = [];
+
+  try {
+    for (const [index, file] of files.entries()) {
+      setInboxFeedback(`正在上传 ${index + 1}/${files.length}：${file.name}`);
+      try {
+        const payload = await postInboxUpload(file);
+        const filePath = String(payload?.file?.path || file.name || "inbox/未命名文件");
+        uploadedPaths.push(filePath);
+      } catch (error) {
+        console.error("Failed to upload inbox file:", error);
+        failedFiles.push(`${file.name}：${error.message}`);
+      }
+    }
+
+    highlightedInboxPath = uploadedPaths[uploadedPaths.length - 1] || "";
+    await refreshInboxFiles({ open: true, highlightPath: highlightedInboxPath });
+    const successCount = uploadedPaths.length;
+    if (successCount > 0 || failedFiles.length > 0) {
+      const successSummary =
+        successCount === 0
+          ? ""
+          : successCount === 1
+            ? `文件已上传到 ${uploadedPaths[0]}。`
+            : `已上传 ${successCount} 个文件到当前知识库的 inbox。`;
+      const failureSummary = failedFiles.length ? `失败 ${failedFiles.length} 个。` : "";
+      const detail = failedFiles.length ? ` ${failedFiles.join("；")}` : "";
+      const message = `${successSummary}${failureSummary}${successCount > 0 ? " 现在可以点上方 ingest，把整箱内容交给 Pi。" : ""}${detail}`.trim();
+      setInboxFeedback(message, successCount === 0);
+      showSettingsHint(
+        successCount > 0
+          ? successCount === 1
+            ? `已上传到 ${uploadedPaths[0]}`
+            : `已上传 ${successCount} 个文件`
+          : "上传失败，请查看 Inbox 面板"
+      );
+    }
+  } catch (error) {
+    console.error("Failed to upload inbox file batch:", error);
+    openInboxPanel();
+    setInboxFeedback(`上传文件失败：${error.message}`, true);
+    showSettingsHint("上传失败，请查看 Inbox 面板");
+  } finally {
+    isUploadingInboxFile = false;
+    if (uploadInputEl) {
+      uploadInputEl.value = "";
+    }
+    refreshChatControls();
+    renderInboxPanel();
+  }
+}
+
+async function postInboxUpload(file) {
+  const response = await fetch("/api/knowledge-base/inbox/upload", {
+    method: "POST",
+    headers: {
+      "Content-Type": file.type || "application/octet-stream",
+      "X-Gogo-Filename": encodeURIComponent(file.name || "upload.bin"),
+    },
+    body: file,
+  });
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
+  return response.json();
+}
+
+async function deleteInboxFile(file) {
+  const filePath = String(file?.path || "").trim();
+  if (!filePath || inboxDeletingPaths.has(filePath)) {
+    return;
+  }
+  if (!window.confirm(`确认从 inbox 删除 ${filePath} 吗？`)) {
+    return;
+  }
+
+  inboxDeletingPaths.add(filePath);
+  renderInboxPanel();
+  setInboxFeedback(`正在删除 ${filePath}...`);
+
+  try {
+    const url = new URL("/api/knowledge-base/inbox/files", window.location.origin);
+    url.searchParams.set("path", filePath);
+    const response = await fetch(url.toString(), {
+      method: "DELETE",
+    });
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+
+    if (highlightedInboxPath === filePath) {
+      highlightedInboxPath = "";
+    }
+    inboxFiles = inboxFiles.filter((item) => item.path !== filePath);
+    setInboxFeedback(`已从 inbox 删除 ${filePath}。`);
+  } catch (error) {
+    console.error("Failed to delete inbox file:", error);
+    setInboxFeedback(`删除失败：${error.message}`, true);
+  } finally {
+    inboxDeletingPaths.delete(filePath);
+    renderInboxPanel();
   }
 }
 
@@ -595,7 +956,37 @@ function ensureSessionHistory(sessionId) {
   return newHistory;
 }
 
-function upsertAssistantTurn(targetHistory, content) {
+function normalizeHistoryTurn(item) {
+  const role = item?.role === "assistant" ? "assistant" : "user";
+  const normalized = {
+    role,
+    content: String(item?.content || ""),
+  };
+  if (Array.isArray(item?.consulted_pages)) {
+    normalized.consulted_pages = item.consulted_pages
+      .filter((entry) => entry && typeof entry === "object")
+      .map((entry) => ({
+        title: String(entry.title || entry.path || "").trim(),
+        path: String(entry.path || "").trim(),
+        source: String(entry.source || "wiki").trim() || "wiki",
+      }))
+      .filter((entry) => entry.path);
+  }
+  if (Array.isArray(item?.trace)) {
+    normalized.trace = item.trace.filter((entry) => entry && typeof entry === "object");
+  }
+  if (Array.isArray(item?.warnings)) {
+    normalized.warnings = item.warnings
+      .map((entry) => String(entry || "").trim())
+      .filter(Boolean);
+  }
+  if (item?.stopped) {
+    normalized.stopped = true;
+  }
+  return normalized;
+}
+
+function upsertAssistantTurn(targetHistory, content, extras = {}) {
   const aiContent = String(content || "").trim();
   if (!aiContent) {
     return;
@@ -604,10 +995,23 @@ function upsertAssistantTurn(targetHistory, content) {
   const lastMsg = targetHistory[targetHistory.length - 1];
   if (lastMsg && lastMsg.role === "assistant") {
     lastMsg.content = aiContent;
+    lastMsg.consulted_pages = Array.isArray(extras.consulted_pages) ? extras.consulted_pages : [];
+    lastMsg.trace = Array.isArray(extras.trace) ? extras.trace : [];
+    lastMsg.warnings = Array.isArray(extras.warnings) ? extras.warnings : [];
+    lastMsg.stopped = Boolean(extras.stopped);
     return;
   }
 
-  targetHistory.push({ role: "assistant", content: aiContent });
+  targetHistory.push(
+    normalizeHistoryTurn({
+      role: "assistant",
+      content: aiContent,
+      consulted_pages: extras.consulted_pages,
+      trace: extras.trace,
+      warnings: extras.warnings,
+      stopped: extras.stopped,
+    })
+  );
 }
 
 function clearMessages() {
@@ -643,7 +1047,13 @@ function renderHistory(messages) {
     return;
   }
   for (const msg of messages) {
-    appendMessage(msg.role, msg.content);
+    appendMessage(
+      msg.role,
+      msg.content,
+      msg.consulted_pages || [],
+      msg.trace || [],
+      msg.warnings || []
+    );
   }
   scrollMessagesToBottom(true);
   storeCurrentSessionView();
@@ -661,7 +1071,11 @@ function saveCurrentHistory() {
   if (currentStreamingMessage && currentStreamingSessionId === currentSessionId) {
     const aiContent = currentStreamingMessage.getContent().trim();
     if (aiContent && aiContent !== "Pi 正在生成答复...") {
-      upsertAssistantTurn(targetHistory, aiContent);
+      upsertAssistantTurn(targetHistory, aiContent, {
+        consulted_pages: currentStreamingMessage.getConsultedPages?.() || [],
+        trace: currentStreamingMessage.getTraceSnapshot?.() || [],
+        warnings: currentStreamingMessage.getWarnings?.() || [],
+      });
     }
   }
 
@@ -697,12 +1111,11 @@ async function hydrateSessionHistoryFromStore(sessionId) {
         if (!item || typeof item !== "object") {
           return;
         }
-        const role = item.role === "assistant" ? "assistant" : "user";
-        const content = String(item.content || "");
-        if (!content.trim()) {
+        const turn = normalizeHistoryTurn(item);
+        if (!turn.content.trim()) {
           return;
         }
-        targetHistory.push({ role, content });
+        targetHistory.push(turn);
       });
       sessionHistories.set(sessionId, targetHistory);
     }
@@ -1237,6 +1650,10 @@ function createStreamingAssistantMessage(initialText) {
   let lastWorklogEntry = null;
   let thinkingStreamNote = null;
   let rawContent = String(initialText || "");
+  let consultedPagesState = [];
+  let warningState = [];
+  const traceState = [];
+  let thinkingTraceItem = null;
 
   function updateTraceSummary() {
     const parts = [];
@@ -1251,6 +1668,9 @@ function createStreamingAssistantMessage(initialText) {
   }
 
   function setConsultedPages(pages = []) {
+    consultedPagesState = Array.isArray(pages)
+      ? pages.filter((item) => item && typeof item === "object").map((item) => ({ ...item }))
+      : [];
     metaHost.innerHTML = "";
     const meta = createConsultedPagesMeta(pages);
     if (meta) {
@@ -1265,6 +1685,7 @@ function createStreamingAssistantMessage(initialText) {
   function setWarnings(warnings = []) {
     warningsListEl.innerHTML = "";
     warningCount = Array.isArray(warnings) ? warnings.length : 0;
+    warningState = Array.isArray(warnings) ? warnings.map((item) => String(item || "")) : [];
     if (warningCount) {
       warnings.forEach((item) => {
         const row = document.createElement("li");
@@ -1309,6 +1730,17 @@ function createStreamingAssistantMessage(initialText) {
         traceCount += 1;
         updateTraceSummary();
       }
+      if (!thinkingTraceItem) {
+        thinkingTraceItem = {
+          kind: "thinking",
+          title: "思考记录",
+          detail: "",
+          action: "thinking",
+          event_type: "thinking_delta",
+        };
+        traceState.push(thinkingTraceItem);
+      }
+      thinkingTraceItem.detail += delta;
       thinkingStreamNote.append(delta);
       scrollMessagesToBottom();
     },
@@ -1317,6 +1749,7 @@ function createStreamingAssistantMessage(initialText) {
       if (!item || typeof item !== "object") {
         return;
       }
+      traceState.push({ ...item });
 
       if (item.kind === "thinking") {
         const note = createWorklogNote(item);
@@ -1361,6 +1794,15 @@ function createStreamingAssistantMessage(initialText) {
     },
     getContent() {
       return rawContent;
+    },
+    getTraceSnapshot() {
+      return traceState.map((item) => ({ ...item }));
+    },
+    getWarnings() {
+      return [...warningState];
+    },
+    getConsultedPages() {
+      return consultedPagesState.map((item) => ({ ...item }));
     },
   };
 }
@@ -1455,50 +1897,6 @@ async function extractErrorMessage(response) {
     // ignore parsing error
   }
   return `HTTP ${response.status}`;
-}
-
-async function uploadInboxFile(file) {
-  if (!file) {
-    return;
-  }
-
-  isUploadingInboxFile = true;
-  refreshChatControls();
-
-  try {
-    const response = await fetch("/api/knowledge-base/inbox/upload", {
-      method: "POST",
-      headers: {
-        "Content-Type": file.type || "application/octet-stream",
-        "X-Gogo-Filename": encodeURIComponent(file.name || "upload.bin"),
-      },
-      body: file,
-    });
-    if (!response.ok) {
-      throw new Error(await extractErrorMessage(response));
-    }
-
-    const payload = await response.json();
-    const filePath = String(payload?.file?.path || file.name || "inbox/未命名文件");
-    const prompt = String(payload?.ingest_prompt || "").trim();
-    if (prompt) {
-      injectPrompt(prompt, false);
-    }
-    appendMessage(
-      "assistant",
-      `文件已上传到 \`${filePath}\`。我已经把 ingest 提示词放进输入框里，你确认后发送给 Pi 就可以开始按 schema ingest。`
-    );
-    showSettingsHint(`已上传到 ${filePath}`);
-  } catch (error) {
-    console.error("Failed to upload inbox file:", error);
-    appendMessage("assistant", `上传文件失败：${error.message}`);
-  } finally {
-    isUploadingInboxFile = false;
-    if (uploadInputEl) {
-      uploadInputEl.value = "";
-    }
-    refreshChatControls();
-  }
 }
 
 function renderSessionList() {
@@ -1959,7 +2357,12 @@ async function sendMessage(message) {
   rememberSessionId(requestSessionId);
 
   appendMessage("user", message);
-  requestHistory.push({ role: "user", content: message });
+  requestHistory.push(
+    normalizeHistoryTurn({
+      role: "user",
+      content: message,
+    })
+  );
 
   const runtime = describeRuntime();
   const liveMessage = createStreamingAssistantMessage(runtime.pending);
@@ -2033,7 +2436,18 @@ async function sendMessage(message) {
         ? finalPayload.message
         : liveMessage.getContent().trim() || "Pi 没有返回最终结果。";
 
-    upsertAssistantTurn(requestHistory, assistantMessage);
+    upsertAssistantTurn(requestHistory, assistantMessage, {
+      consulted_pages: Array.isArray(finalPayload?.consulted_pages)
+        ? finalPayload.consulted_pages
+        : liveMessage.getConsultedPages(),
+      trace: Array.isArray(finalPayload?.trace)
+        ? finalPayload.trace
+        : liveMessage.getTraceSnapshot(),
+      warnings: Array.isArray(finalPayload?.warnings)
+        ? finalPayload.warnings
+        : liveMessage.getWarnings(),
+      stopped: Boolean(finalPayload?.stopped),
+    });
     sessionHistories.set(requestSessionId, requestHistory);
     if (requestSessionId === currentSessionId && !messagesEl.contains(liveMessage.element)) {
       clearMessages();
@@ -2052,7 +2466,11 @@ async function sendMessage(message) {
       message: fallbackMessage,
       warnings,
     });
-    upsertAssistantTurn(requestHistory, fallbackMessage);
+    upsertAssistantTurn(requestHistory, fallbackMessage, {
+      consulted_pages: liveMessage.getConsultedPages(),
+      trace: liveMessage.getTraceSnapshot(),
+      warnings,
+    });
     sessionHistories.set(requestSessionId, requestHistory);
     if (requestSessionId === currentSessionId) {
       storeCurrentSessionView();
@@ -2156,6 +2574,9 @@ document.addEventListener("keydown", (event) => {
     return;
   }
   closeChatControlMenus();
+  if (inboxPanelOpen) {
+    closeInboxPanel();
+  }
   if (openSessionMenuId) {
     openSessionMenuId = null;
     renderSessionList();
@@ -2171,12 +2592,78 @@ uploadButtonEl?.addEventListener("click", () => {
 });
 
 uploadInputEl?.addEventListener("change", async () => {
-  const file = uploadInputEl.files?.[0];
-  if (!file) {
+  const files = uploadInputEl.files;
+  if (!files?.length) {
     return;
   }
-  await uploadInboxFile(file);
+  await uploadInboxFiles(files);
 });
+
+toggleInboxPanelButtonEl?.addEventListener("click", async () => {
+  if (inboxPanelOpen) {
+    closeInboxPanel();
+    return;
+  }
+  openInboxPanel();
+  await refreshInboxFiles({ open: true });
+});
+
+closeInboxPanelButtonEl?.addEventListener("click", closeInboxPanel);
+refreshInboxPanelButtonEl?.addEventListener("click", async () => {
+  await refreshInboxFiles({ open: true });
+});
+ingestInboxPanelButtonEl?.addEventListener("click", () => {
+  if (!inboxFiles.length) {
+    setInboxFeedback("Inbox 里还没有文件，先上传一些内容吧。", true);
+    return;
+  }
+  injectPrompt(INBOX_INGEST_PROMPT, false);
+  setInboxFeedback("已把“ingest inbox”提示词插入输入框。");
+  showSettingsHint("ingest 提示词已插入输入框");
+});
+
+function bindInboxDropTarget(target) {
+  if (!target) {
+    return;
+  }
+  target.addEventListener("dragenter", (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    inboxDragDepth += 1;
+    setInboxDragState(true);
+  });
+  target.addEventListener("dragover", (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    setInboxDragState(true);
+  });
+  target.addEventListener("dragleave", (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    inboxDragDepth = Math.max(0, inboxDragDepth - 1);
+    if (inboxDragDepth === 0) {
+      setInboxDragState(false);
+    }
+  });
+  target.addEventListener("drop", async (event) => {
+    if (!eventHasFiles(event)) {
+      return;
+    }
+    event.preventDefault();
+    resetInboxDragState();
+    await uploadInboxFiles(event.dataTransfer?.files);
+  });
+}
+
+bindInboxDropTarget(toggleInboxPanelButtonEl);
+bindInboxDropTarget(inboxPanelEl);
 
 modelButtonEl?.addEventListener("click", () => {
   if (modelButtonEl.disabled) {
@@ -2215,6 +2702,7 @@ async function bootstrapChat() {
   } else {
     enterDraftState({ skipSave: true });
   }
+  await refreshInboxFiles();
   refreshChatControls();
 }
 
