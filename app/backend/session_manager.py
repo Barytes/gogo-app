@@ -312,21 +312,74 @@ class SessionPool:
         except Exception:
             logger.warning("Failed to persist app turn history for session %s", session.session_id, exc_info=True)
 
-    def _turns_tail_matches(
+    def _merge_rich_history_tail(
         self,
         base_history: list[dict[str, Any]],
         app_turns: list[dict[str, Any]],
-    ) -> bool:
-        if not app_turns or len(app_turns) > len(base_history):
-            return False
+    ) -> list[dict[str, Any]] | None:
+        if not app_turns:
+            return None
+        if not base_history:
+            return app_turns
+        if len(app_turns) >= len(base_history):
+            return app_turns
+
         offset = len(base_history) - len(app_turns)
+        matched_user_turn = False
         for index, app_turn in enumerate(app_turns):
             base_turn = base_history[offset + index]
-            if str(base_turn.get("role") or "") != str(app_turn.get("role") or ""):
-                return False
-            if str(base_turn.get("content") or "") != str(app_turn.get("content") or ""):
-                return False
-        return True
+            app_role = str(app_turn.get("role") or "")
+            base_role = str(base_turn.get("role") or "")
+            if app_role != base_role:
+                return None
+            if app_role == "user":
+                matched_user_turn = True
+                if str(app_turn.get("content") or "") != str(base_turn.get("content") or ""):
+                    return None
+
+        if not matched_user_turn:
+            return None
+
+        return [*base_history[:offset], *app_turns]
+
+    def _user_turns_with_indices(
+        self,
+        turns: list[dict[str, Any]],
+    ) -> list[tuple[int, str]]:
+        user_turns: list[tuple[int, str]] = []
+        for index, turn in enumerate(turns):
+            if str(turn.get("role") or "") != "user":
+                continue
+            user_turns.append((index, str(turn.get("content") or "")))
+        return user_turns
+
+    def _merge_rich_history_by_user_turns(
+        self,
+        base_history: list[dict[str, Any]],
+        app_turns: list[dict[str, Any]],
+    ) -> list[dict[str, Any]] | None:
+        if not app_turns:
+            return None
+        if not base_history:
+            return app_turns
+
+        app_users = self._user_turns_with_indices(app_turns)
+        base_users = self._user_turns_with_indices(base_history)
+        if not app_users or len(app_users) > len(base_users):
+            return None
+
+        user_offset = len(base_users) - len(app_users)
+        for index, (_, app_content) in enumerate(app_users):
+            _, base_content = base_users[user_offset + index]
+            if app_content != base_content:
+                return None
+
+        first_base_user_index = base_users[user_offset][0]
+        first_app_user_index = app_users[0][0]
+        if first_app_user_index >= len(app_turns):
+            return None
+
+        return [*base_history[:first_base_user_index], *app_turns[first_app_user_index:]]
 
     def _restore_sessions_from_registry(self) -> None:
         for sid, record in self._registry.items():
@@ -1294,8 +1347,12 @@ class SessionPool:
         if session:
             online = self._load_history_via_rpc(session=session, max_turns=max_turns)
             if online is not None:
-                if app_turns and self._turns_tail_matches(online, app_turns):
-                    return [*online[: len(online) - len(app_turns)], *app_turns]
+                merged_online = self._merge_rich_history_tail(online, app_turns or [])
+                if merged_online is not None:
+                    return merged_online
+                merged_online = self._merge_rich_history_by_user_turns(online, app_turns or [])
+                if merged_online is not None:
+                    return merged_online
                 if app_turns and len(app_turns) >= len(online):
                     return app_turns
                 return online
@@ -1305,8 +1362,12 @@ class SessionPool:
                     max_turns=max_turns,
                 )
                 if offline is not None:
-                    if app_turns and self._turns_tail_matches(offline, app_turns):
-                        return [*offline[: len(offline) - len(app_turns)], *app_turns]
+                    merged_offline = self._merge_rich_history_tail(offline, app_turns or [])
+                    if merged_offline is not None:
+                        return merged_offline
+                    merged_offline = self._merge_rich_history_by_user_turns(offline, app_turns or [])
+                    if merged_offline is not None:
+                        return merged_offline
                     if app_turns and len(app_turns) >= len(offline):
                         return app_turns
                     return offline

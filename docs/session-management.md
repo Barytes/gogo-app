@@ -4,7 +4,7 @@
 >
 > 上层产品/应用架构见 [gogo-app-architecture.md](gogo-app-architecture.md)。
 
-**更新时间**: 2026-04-15
+**更新时间**: 2026-04-16
 
 ---
 
@@ -160,7 +160,16 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 1. 先加载应用层 `gogo-session-turns/*.jsonl`
 2. 再尝试通过 RPC `get_messages()` 获取 Pi 原生历史
 3. 如果 RPC 不可用，再离线读取 Pi 原生 session JSONL
-4. 若应用层富历史和 Pi 历史尾部可对齐，则用应用层版本覆盖尾部，保留 `trace / warnings / consulted_pages`
+4. 若应用层富历史和 Pi 历史可对齐，则用应用层版本覆盖对应区段，优先保留 `trace / warnings / consulted_pages`
+
+这里的“可对齐”分两层：
+
+- 第一层：尾部回合对齐  
+  不再要求 assistant 文本逐字一致；只要尾部回合的 `role` 顺序一致，且用户消息能对齐，就允许用应用层富历史覆盖对应 assistant 回合。
+- 第二层：用户回合对齐  
+  如果 Pi `get_messages()` 把中间 assistant 状态消息也展开返回，导致两份历史的 assistant 条目数不同，就退回到“按用户消息序列”对齐。只要用户回合顺序和内容一致，就用应用层富历史替换该段最终问答。
+
+这样可以避免 Pi 原生历史里那些“我来查一下……”“让我再看看……”之类的中间 assistant 消息，把真正需要恢复的结构化 `trace` 挤掉，最终又退化成“只有零散文本、没有完整思考过程”的纯消息视图。
 
 这意味着：
 

@@ -39,6 +39,20 @@ function decodeUriComponentSafe(value) {
   }
 }
 
+function formatPageLocationLabel(mode, path = "", category = "") {
+  const modeLabel = String(mode || "").trim() || "wiki";
+  const normalizedPath = String(path || "").trim().replace(/^\/+/, "");
+  const normalizedCategory = String(category || "").trim();
+
+  if (normalizedPath) {
+    return `${modeLabel} / ${normalizedPath}`;
+  }
+  if (normalizedCategory && normalizedCategory !== "root") {
+    return `${modeLabel} / ${normalizedCategory}`;
+  }
+  return modeLabel;
+}
+
 function normalizePathSegments(segments) {
   const normalized = [];
   segments.forEach((segment) => {
@@ -389,7 +403,7 @@ async function loadPage(path) {
   activePage = data;
   const renderMode = data.render_mode || (activeMode === "wiki" ? "markdown" : "binary");
 
-  categoryEl.textContent = `${activeMode} / ${data.category} / ${data.path}`;
+  categoryEl.textContent = formatPageLocationLabel(activeMode, data.path, data.category);
   titleEl.textContent = data.title;
   if (renderMode === "markdown") {
     contentEl.innerHTML = markdownToHtml(data.content || "");
@@ -475,7 +489,7 @@ async function navigateToPage(path, source = "wiki", options = {}) {
       }
       renderList(allPages);
     }
-    categoryEl.textContent = `${source} / unavailable / ${path}`;
+    categoryEl.textContent = formatPageLocationLabel(source, path, "unavailable");
     titleEl.textContent = "暂时无法读取内容";
     contentEl.innerHTML = `<p class="empty-state">${escapeHtml(String(error?.message || "跳转失败。"))}</p>`;
     updateWikiHistoryButtons();

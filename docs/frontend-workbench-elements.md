@@ -190,9 +190,9 @@
 
 ### 5.5 `#wiki-category`
 
-- 功能：显示当前页来源、分类和相对路径。
+- 功能：显示当前页来源和相对路径。
 - 示例：
-  `wiki / insights / insights/foo.md`
+  `wiki / insights/foo.md`
 
 ### 5.6 `#wiki-title`
 

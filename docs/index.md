@@ -29,4 +29,5 @@
 
 - [knowledge-base-architecture.md](knowledge-base-architecture.md) - knowledge-base 的架构、schema、行为与边界
 - [code-doc-mapping.md](code-doc-mapping.md) - 代码文件与解释文档映射
+- [problem-log.md](problem-log.md) - 开发问题、根因与解决方案记录
 - [documentation-cleanup-audit-2026-04-15.md](documentation-cleanup-audit-2026-04-15.md) - 本轮文档清理与覆盖性审计结果
