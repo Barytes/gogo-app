@@ -97,6 +97,11 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 - `last_used_at`
 - `message_count`
 
+当前 registry 写盘策略是：
+
+- 创建会话、更新设置、请求开始/结束、进程重置这类结构性变化会立即落盘
+- `get_session()` 触发的 `last_used_at` 更新时间只做节流写盘，避免每次读会话都重写整个 registry
+
 ### 3.2 app turn 富历史
 
 `gogo-session-turns/<session_id>.jsonl` 是应用层补充历史，用来持久化前端真正需要恢复的内容：
@@ -158,9 +163,10 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 `replay_history(session_id)` 当前恢复顺序是：
 
 1. 先加载应用层 `gogo-session-turns/*.jsonl`
-2. 再尝试通过 RPC `get_messages()` 获取 Pi 原生历史
-3. 如果 RPC 不可用，再离线读取 Pi 原生 session JSONL
-4. 若应用层富历史和 Pi 历史可对齐，则用应用层版本覆盖对应区段，优先保留 `trace / warnings / consulted_pages`
+2. 如果当前会话不在 pending 回复中，且应用层富历史已存在，则直接返回它作为历史恢复快路径
+3. 否则再尝试通过 RPC `get_messages()` 获取 Pi 原生历史
+4. 如果 RPC 不可用，再离线读取 Pi 原生 session JSONL
+5. 若应用层富历史和 Pi 历史可对齐，则用应用层版本覆盖对应区段，优先保留 `trace / warnings / consulted_pages`
 
 这里的“可对齐”分两层：
 
@@ -175,6 +181,25 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 
 - 刷新、切换会话后，前端优先恢复“带思考过程”的历史
 - 不再退化成只有零碎 assistant 文本的纯消息视图
+- 常见会话打开路径不再总是为了恢复历史额外走一轮 Pi RPC，从而减少启动和切换时的卡顿
+- 对超长会话，app-turns 历史恢复也不再总是从头扫完整个 JSONL；若只需要最近 `N` 条，会优先从文件尾部反向提取最后几行
+
+### 5.1 历史接口的窗口语义
+
+`GET /api/sessions/{id}/history` 当前支持：
+
+- `limit`：本次最多返回多少条 turn
+- `offset`：从最新历史开始，先向前跳过多少条 turn
+
+这意味着前端可以按“从最新往前分页”的方式恢复长会话：
+
+- 首次只取最近一页
+- 用户再按需加载更早历史
+
+当前 UI 第一版里：
+
+- 聊天区首屏默认只渲染最近一页历史
+- 如果后端返回 `has_more=true`，前端会显示“加载更早消息”
 
 ---
 

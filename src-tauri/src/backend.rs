@@ -15,7 +15,7 @@ use serde::Serialize;
 const BACKEND_HOST: &str = "127.0.0.1";
 const HEALTH_PATH: &str = "/api/health";
 const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
-const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(300);
+const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(150);
 
 #[derive(Debug)]

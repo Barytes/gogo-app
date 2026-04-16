@@ -1076,16 +1076,26 @@ def get_session(session_id: str) -> dict[str, object]:
 def get_session_history(
     session_id: str,
     limit: int = Query(200, ge=1, le=1000, description="最大返回 turn 数（user+assistant）"),
+    offset: int = Query(0, ge=0, le=100000, description="从最新消息开始向前跳过的 turn 数"),
 ) -> dict[str, object]:
     """回放会话历史（优先 RPC get_messages，离线兜底原生 session JSONL）。"""
     if "/" in session_id or "\\" in session_id or ".." in session_id:
         raise HTTPException(status_code=400, detail="Invalid session_id format")
     pool = get_session_pool()
-    history = pool.replay_history(session_id=session_id, max_turns=limit)
+    requested_history = pool.replay_history(
+        session_id=session_id,
+        max_turns=limit + 1,
+        offset_turns=offset,
+    )
+    has_more = len(requested_history) > limit
+    history = requested_history[1:] if has_more else requested_history
     return {
         "session_id": session_id,
         "history": history,
         "count": len(history),
+        "limit": limit,
+        "offset": offset,
+        "has_more": has_more,
     }
 
 

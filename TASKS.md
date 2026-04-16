@@ -204,13 +204,64 @@
   - [x] 点击后向聊天框插入默认提示词，例如“请将上述回答写回wiki页面”
   - [x] 明确插入的是纯文本草稿，还是附带对当前回答的引用上下文
   - [x] 评估是否需要同时支持写回到当前打开 Wiki 页面，或仅先作为通用写回提示词入口
-- [ ] 排查会话切换与启动时的卡顿，并做性能优化
-  - [ ] 复现问题：点击进入一个会话，或 app 刚打开恢复最近会话时，聊天界面会短暂卡顿后才出现历史消息
-  - [ ] 定位当前最耗时的链路：会话列表加载、单会话历史恢复、前端整段重渲染、Markdown 渲染、右侧导航刷新、或后端 replay/history 合并
-  - [ ] 明确卡顿发生在前端主线程、后端 API、还是两者叠加
-  - [ ] 用日志或 profiling 标出最重的几个热点函数/接口
-  - [ ] 给出并实现第一轮低风险优化方案，优先减少“打开会话时白屏等待一下”的体感
-  - [ ] 评估是否需要进一步做历史分段渲染、虚拟列表、延迟渲染 trace/导航等深层优化
+- [x] 排查会话切换与启动时的卡顿，并做性能优化
+  - [x] 复现问题：点击进入一个会话，或 app 刚打开恢复最近会话时，聊天界面会短暂卡顿后才出现历史消息
+  - [x] 定位当前最耗时的链路：会话列表加载、单会话历史恢复、前端整段重渲染、Markdown 渲染、右侧导航刷新、或后端 replay/history 合并
+  - [x] 明确卡顿发生在前端主线程、后端 API、还是两者叠加
+  - [x] 用日志或 profiling 标出最重的几个热点函数/接口
+  - [x] 给出并实现第一轮低风险优化方案，优先减少“打开会话时白屏等待一下”的体感
+  - [x] 评估是否需要进一步做历史分段渲染、虚拟列表、延迟渲染 trace/导航等深层优化
+  - 结论：本轮排查认为卡顿主要来自“后端历史恢复成本 + 前端整段同步重渲染”的叠加。当前已新增文档 `docs/session-performance-optimization-log.md` 记录排查与优化历史；第一轮优化已完成四项：`replay_history()` 对已有 app-turns 走本地快路径、切会话时不再阻塞等待 session detail、历史消息改成分批渲染并减少重复滚动/导航刷新、启动阶段的 Pi options / slash / sessions / inbox 请求并行化。
+- [x] 优化流式回答阶段的 Markdown 渲染性能
+  - [x] 排查 `appendDelta()` / `setContent()` 当前“每个 delta 都整段重新跑 `markdownToHtml()`”的实际耗时
+  - [x] 评估低风险优化：生成中先显示纯文本，final 再完整 Markdown；或对 Markdown 重渲染做节流
+  - [x] 确保优化后不破坏现有代码块、链接、Wiki 内链与引用显示
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已落地第一轮低风险优化：流式 assistant 正文改成按帧合并 Markdown 渲染，`finalize()` 时再强制 flush；显示效果保持不变，但避免了每个 delta 都整段重跑 `markdownToHtml()`。
+- [x] 优化右侧问题导航在长会话中的刷新成本
+  - [x] 评估 `syncQuestionAnchors()` / `updateChatScrollAffordances()` 对超长历史的扫描成本
+  - [x] 设计更懒的刷新策略，避免每次小变动都重新扫描全部 `.message-user`
+  - [x] 评估是否可复用已有 question anchor 缓存，而不是每次重新从 DOM 收集
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已落地第一轮优化：问题 anchor 改成缓存维护，右侧导航 DOM 只在结构变化时重建；普通滚动时仅更新 active 高亮，不再重新扫描并重建整套导航。
+- [x] 降低 session registry 的高频落盘开销
+  - [x] 评估 `get_session()` 每次更新时间戳都写回 `gogo-session-registry.json` 的真实成本
+  - [x] 设计节流/批量写盘策略，避免频繁只为 `last_used_at` 更新就落盘
+  - [x] 确保异常退出时仍能保留足够可靠的 session 元数据
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已落地第一轮优化：`get_session()` 的触碰式 registry 更新改成节流写盘（5 秒窗口），创建/设置更新/请求开始与结束/进程重置等结构性变化仍立即落盘，从而减少频繁只为 `last_used_at` 更新时间而重写完整 registry 文件的 I/O。
+- [x] 优化超长会话的 app-turns 历史读取
+  - [x] 评估 `_load_history_from_app_turns()` 当前“顺序读完整 JSONL 再截尾”的成本
+  - [x] 研究尾部读取、周期性快照，或历史分段文件等方案
+  - [x] 明确哪种方案最适合当前 `gogo-app` 的实现复杂度和可靠性
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已落地第一轮优化：当只需要最近 `max_turns` 条 app-turns 历史时，改成从 `gogo-session-turns/*.jsonl` 尾部反向读取最后几行，而不是顺序扫描完整文件；默认会话恢复路径因此不再随着整个历史文件长度线性变慢。
+- [x] 评估更深层的长会话渲染优化
+  - [x] 评估“先渲染最近 N 轮，老历史延迟加载”的用户体验与实现复杂度
+  - [x] 评估是否需要虚拟列表
+  - [x] 评估是否应把 trace / 思考过程的详细 DOM 渲染延迟到用户展开时
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已完成方案评估。推荐顺序是：1）优先实现“最近 N 轮先渲染、老历史延迟加载”；2）再实现 trace / 思考过程按展开时机延迟渲染；3）最后再评估是否真的需要虚拟列表。当前判断是，虚拟列表收益上限高，但和现有消息缓存、吸底、trace 展开、右侧问题导航的耦合太深，不适合作为下一步首选。
+- [x] 实现长会话“最近 N 轮优先渲染，老历史延迟加载”
+  - [x] 设计默认首屏渲染的最近轮数，以及“加载更早消息”的交互位置
+  - [x] 明确右侧问题导航在“仅部分历史已渲染”时的行为
+  - [x] 评估后端历史接口是否需要补充分页 / before cursor，或先用前端已有历史缓冲实现第一版
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已完成第一轮实现。会话首屏默认只恢复最近 `60` 条历史，并在还有更早消息时显示“加载更早消息”；后端历史接口补成了从最新往前的 `limit + offset` 窗口语义。当前版本里，右侧问题导航只基于已渲染历史工作，这是为了换取更轻的首屏 DOM 成本而做的有意取舍。
+- [x] 实现 trace / 思考过程按展开时机延迟渲染
+  - [x] 调整 assistant 历史消息的 trace 渲染方式，折叠时只保留 summary
+  - [x] 首次展开时再填充完整 trace / warnings DOM
+  - [x] 确保已有流式消息、历史恢复消息和会话视图缓存行为一致
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已完成第一轮实现。历史 assistant 消息与流式 assistant 消息的 trace 都改成折叠时只维护 summary 和状态，用户首次展开时再创建内部 trace / warnings DOM；这样能继续降低长会话首屏恢复和流式回复期间的无效 DOM 构建成本。
+- [x] 排查软件启动时的整体卡顿，并做启动性能优化
+  - [x] 复现“应用启动时大约卡 1 秒才出界面”的问题，并区分是 Tauri 壳、后端启动、前端首屏渲染，还是它们叠加
+  - [x] 明确启动链路中哪些步骤阻塞了首个窗口显示，例如：Tauri 启动后端、健康检查、前端 bootstrap、首屏数据请求
+  - [x] 用日志或时间点埋点标出启动阶段最慢的几个步骤
+  - [x] 给出并实现第一轮低风险优化，优先改善“窗口出现前的等待感”
+  - [x] 评估是否需要把首屏渲染和数据加载拆成更明显的 loading / skeleton，而不是整段等待
+  - [x] 把结果继续记录到 `docs/session-performance-optimization-log.md`
+  - 结论：当前已完成第一轮启动优化：前端 bootstrap 改成“先恢复会话列表与最近活跃会话，再后台预热 `Pi options / slash / inbox`”，同时 Tauri 端 FastAPI 健康检查轮询间隔从 `300ms` 降到 `100ms`。当前判断是，启动卡顿来自“Tauri 等待本地后端 ready + 前端把非关键请求混入首屏关键路径”的叠加；开发态仍受 `beforeDevCommand` 限制，若后续仍需进一步改善窗口出现前的等待，可再评估原生 splash。
 
 ### 4. Backlog
 
@@ -249,6 +300,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-04-16 | 完成一轮会话切换 / 启动恢复卡顿排查与性能优化：新增 `docs/session-performance-optimization-log.md`，并落地 app-turns 历史快路径、后台刷新 session detail、历史消息分批渲染 |
 | 2026-04-16 | 完成 Tauri 第一阶段迁移，并清理旧 Electron 文档与过期任务说明：新增 `src-tauri/`、Tauri 后端启动器、桌面 bridge 与目录选择能力；同步 README / TASKS / docs 索引 |
 | 2026-04-14 | 新增待排查问题：长回复可能被提前中断；`PiRpcClient.abort()` 与流式读取并发时出现 `read() called while another coroutine is already waiting for incoming data` |
 | 2026-04-14 | 将无 session 单次聊天迁移到 `/api/legacy/chat` 与 `/api/legacy/chat/stream`，主 `/api/chat*` 收敛为 session-only；完成固定检索与 `consulted_pages` 评估：两者仅保留为 legacy no-session 兼容能力与应用层 UI 元数据 |

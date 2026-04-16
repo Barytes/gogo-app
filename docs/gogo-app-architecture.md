@@ -122,6 +122,12 @@ Browser
   -> KNOWLEDGE_BASE_DIR
 ```
 
+当前启动链路的首轮优化方向是：
+
+- 前端首屏优先恢复会话列表和最近活跃会话
+- `Pi options`、`slash`、`inbox` 这类非关键数据改成后台预热
+- 桌面版继续由 Tauri 先拉起本地 FastAPI，再加载前端页面
+
 ## 5. Session 与状态
 
 - 会话目录：`.gogo/pi-rpc-sessions/`

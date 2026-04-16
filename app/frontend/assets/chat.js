@@ -32,10 +32,14 @@ const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
+const loadOlderButtonEl = document.querySelector("#chat-load-older-button");
 const CHAT_UI_VERSION = "2026-04-15.4";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
+const SESSION_HISTORY_RENDER_BATCH_SIZE = 12;
+const SESSION_INITIAL_RENDER_LIMIT = 60;
+const SESSION_LOAD_OLDER_BATCH_SIZE = 60;
 const BARE_WIKI_PATH_PATTERN =
   /(^|[\s(>（【「『"'“”‘’,，。；：;:、])(wiki\/.+?\.md)(?=$|[\s)<\]】」』"'“”‘’,，。；：;:、!?！？])/g;
 
@@ -85,6 +89,7 @@ let draftChatSettings = {
 let openChatControlMenu = null;
 let settingsHintTimer = null;
 let isUploadingInboxFile = false;
+let isLoadingOlderHistory = false;
 let inboxFiles = [];
 let inboxPanelOpen = false;
 let inboxLoading = false;
@@ -97,6 +102,10 @@ let slashPanelManual = false;
 let slashPanelActiveIndex = 0;
 let activeQuestionIndex = -1;
 let chatQuestionPopoverHideTimer = null;
+let questionAnchorsCache = [];
+let questionMarkerEls = [];
+let questionItemEls = [];
+const sessionHistoryHasOlder = new Map();
 
 function clearChatQuestionPopoverHideTimer() {
   if (chatQuestionPopoverHideTimer) {
@@ -149,6 +158,12 @@ function createRequestId() {
     return window.crypto.randomUUID();
   }
   return `req-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function nextAnimationFrame() {
+  return new Promise((resolve) => {
+    window.requestAnimationFrame(() => resolve());
+  });
 }
 
 function normalizeModelRecord(model) {
@@ -1261,12 +1276,41 @@ function upsertAssistantTurn(targetHistory, content, extras = {}) {
   );
 }
 
-function clearMessages() {
+function clearMessages({ refreshNavigation = true } = {}) {
   if (!messagesEl) {
     return;
   }
   messagesEl.innerHTML = "";
-  refreshChatNavigation();
+  questionAnchorsCache = [];
+  questionMarkerEls = [];
+  questionItemEls = [];
+  if (refreshNavigation) {
+    refreshChatNavigation({ structureChanged: true });
+  }
+}
+
+function setSessionHasOlderHistory(sessionId, hasOlder) {
+  if (!sessionId) {
+    return;
+  }
+  sessionHistoryHasOlder.set(sessionId, Boolean(hasOlder));
+}
+
+function currentSessionHasOlderHistory() {
+  if (!currentSessionId) {
+    return false;
+  }
+  return Boolean(sessionHistoryHasOlder.get(currentSessionId));
+}
+
+function refreshLoadOlderButton() {
+  if (!loadOlderButtonEl) {
+    return;
+  }
+  const visible = Boolean(currentSessionId) && currentSessionHasOlderHistory();
+  loadOlderButtonEl.classList.toggle("hidden", !visible);
+  loadOlderButtonEl.disabled = !visible || isLoadingOlderHistory;
+  loadOlderButtonEl.textContent = isLoadingOlderHistory ? "正在加载更早消息…" : "加载更早消息";
 }
 
 function storeCurrentSessionView() {
@@ -1284,29 +1328,102 @@ function restoreSessionView(sessionId) {
   if (!Array.isArray(nodes) || nodes.length === 0) {
     return false;
   }
-  clearMessages();
+  clearMessages({ refreshNavigation: false });
   messagesEl.append(...nodes);
+  rebuildQuestionAnchorsFromDom();
   scrollMessagesToBottom(true);
-  refreshChatNavigation();
+  refreshChatNavigation({ structureChanged: true });
   return true;
 }
 
-function renderHistory(messages) {
-  if (!Array.isArray(messages) || !messages.length) {
+function createMessageElement(role, content, consultedPages = [], trace = [], warnings = []) {
+  const wrapper = document.createElement("article");
+  wrapper.className = `message message-${role}`;
+  if (role === "user") {
+    wrapper.dataset.questionAnchor = "true";
+    wrapper.dataset.questionLabel = summarizeQuestionLabel(content);
+  }
+
+  if (role === "assistant") {
+    renderTrace(wrapper, trace, warnings);
+  }
+
+  const meta = createConsultedPagesMeta(consultedPages);
+
+  const body = document.createElement("div");
+  body.className = "message-body";
+  renderMessageBody(body, role, content);
+  wrapper.appendChild(body);
+
+  if (meta) {
+    wrapper.appendChild(meta);
+  }
+
+  if (role === "assistant") {
+    wrapper.appendChild(createAssistantActions(() => content));
+  }
+
+  return wrapper;
+}
+
+async function renderHistory(messages) {
+  if (!messagesEl || !Array.isArray(messages) || !messages.length) {
     return;
   }
-  for (const msg of messages) {
-    appendMessage(
-      msg.role,
-      msg.content,
-      msg.consulted_pages || [],
-      msg.trace || [],
-      msg.warnings || []
-    );
+
+  const renderedQuestionAnchors = [];
+  for (let index = 0; index < messages.length; index += SESSION_HISTORY_RENDER_BATCH_SIZE) {
+    const fragment = document.createDocumentFragment();
+    const chunk = messages.slice(index, index + SESSION_HISTORY_RENDER_BATCH_SIZE);
+    chunk.forEach((msg) => {
+      const element = createMessageElement(
+        msg.role,
+        msg.content,
+        msg.consulted_pages || [],
+        msg.trace || [],
+        msg.warnings || []
+      );
+      if (msg.role === "user") {
+        renderedQuestionAnchors.push(element);
+      }
+      fragment.appendChild(element);
+    });
+    messagesEl.appendChild(fragment);
+    if (index + SESSION_HISTORY_RENDER_BATCH_SIZE < messages.length) {
+      await nextAnimationFrame();
+    }
   }
+  setQuestionAnchors(renderedQuestionAnchors);
   scrollMessagesToBottom(true);
   storeCurrentSessionView();
-  refreshChatNavigation();
+  refreshChatNavigation({ structureChanged: true });
+}
+
+async function prependHistory(messages) {
+  if (!messagesEl || !Array.isArray(messages) || !messages.length) {
+    return;
+  }
+
+  const previousScrollTop = messagesEl.scrollTop;
+  const previousScrollHeight = messagesEl.scrollHeight;
+  const fragment = document.createDocumentFragment();
+  messages.forEach((msg) => {
+    fragment.appendChild(
+      createMessageElement(
+        msg.role,
+        msg.content,
+        msg.consulted_pages || [],
+        msg.trace || [],
+        msg.warnings || []
+      )
+    );
+  });
+  messagesEl.prepend(fragment);
+  rebuildQuestionAnchorsFromDom();
+  refreshChatNavigation({ structureChanged: true });
+  const nextScrollHeight = messagesEl.scrollHeight;
+  messagesEl.scrollTop = previousScrollTop + (nextScrollHeight - previousScrollHeight);
+  storeCurrentSessionView();
 }
 
 function saveCurrentHistory() {
@@ -1338,25 +1455,44 @@ function loadSessionHistory(sessionId) {
 }
 
 async function hydrateSessionHistoryFromStore(sessionId) {
+  return hydrateSessionHistoryPage(sessionId, {
+    limit: SESSION_INITIAL_RENDER_LIMIT,
+    offset: 0,
+    prepend: false,
+  });
+}
+
+async function fetchSessionHistoryPage(sessionId, { limit, offset = 0 } = {}) {
+  const safeSessionId = encodeURIComponent(sessionId);
+  const response = await fetch(`/api/sessions/${safeSessionId}/history?limit=${limit}&offset=${offset}`);
+  if (!response.ok) {
+    throw new Error(`HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+async function hydrateSessionHistoryPage(
+  sessionId,
+  {
+    limit = SESSION_INITIAL_RENDER_LIMIT,
+    offset = 0,
+    prepend = false,
+  } = {}
+) {
   if (!sessionId) {
     return ensureSessionHistory(sessionId);
   }
 
   const targetHistory = ensureSessionHistory(sessionId);
-  if (targetHistory.length > 0 || hydratedSessionIds.has(sessionId)) {
+  if (!prepend && (targetHistory.length > 0 || hydratedSessionIds.has(sessionId))) {
     return targetHistory;
   }
 
   try {
-    const safeSessionId = encodeURIComponent(sessionId);
-    const response = await fetch(`/api/sessions/${safeSessionId}/history?limit=200`);
-    if (!response.ok) {
-      throw new Error(`HTTP ${response.status}`);
-    }
-    const data = await response.json();
+    const data = await fetchSessionHistoryPage(sessionId, { limit, offset });
     const replayed = Array.isArray(data.history) ? data.history : [];
+    const pageTurns = [];
     if (replayed.length > 0) {
-      targetHistory.length = 0;
       replayed.forEach((item) => {
         if (!item || typeof item !== "object") {
           return;
@@ -1365,16 +1501,59 @@ async function hydrateSessionHistoryFromStore(sessionId) {
         if (!turn.content.trim()) {
           return;
         }
-        targetHistory.push(turn);
+        pageTurns.push(turn);
       });
+      if (prepend) {
+        targetHistory.unshift(...pageTurns);
+      } else {
+        targetHistory.length = 0;
+        targetHistory.push(...pageTurns);
+      }
       sessionHistories.set(sessionId, targetHistory);
     }
-    hydratedSessionIds.add(sessionId);
+    setSessionHasOlderHistory(sessionId, Boolean(data?.has_more));
+    if (!prepend) {
+      hydratedSessionIds.add(sessionId);
+    }
   } catch (error) {
     console.warn("Failed to hydrate session history:", sessionId, error);
   }
 
   return targetHistory;
+}
+
+async function loadOlderHistoryForCurrentSession() {
+  if (!currentSessionId || isLoadingOlderHistory) {
+    return;
+  }
+  const sessionId = currentSessionId;
+  const targetHistory = loadSessionHistory(sessionId);
+  if (!targetHistory.length) {
+    return;
+  }
+  isLoadingOlderHistory = true;
+  refreshLoadOlderButton();
+  try {
+    const beforeLength = targetHistory.length;
+    await hydrateSessionHistoryPage(sessionId, {
+      limit: SESSION_LOAD_OLDER_BATCH_SIZE,
+      offset: beforeLength,
+      prepend: true,
+    });
+    if (currentSessionId !== sessionId) {
+      return;
+    }
+    const prependedCount = loadSessionHistory(sessionId).length - beforeLength;
+    if (prependedCount > 0) {
+      const olderTurns = loadSessionHistory(sessionId).slice(0, prependedCount);
+      await prependHistory(olderTurns);
+    }
+  } catch (error) {
+    console.warn("Failed to load older history:", error);
+  } finally {
+    isLoadingOlderHistory = false;
+    refreshLoadOlderButton();
+  }
 }
 
 function isMessagesNearBottom() {
@@ -1399,23 +1578,49 @@ function summarizeQuestionLabel(value, maxLength = 48) {
   return `${normalized.slice(0, maxLength - 1).trim()}…`;
 }
 
-function getQuestionAnchors() {
-  if (!messagesEl) {
-    return [];
+function prepareQuestionAnchor(element, index) {
+  if (!(element instanceof Element)) {
+    return null;
   }
-  return Array.from(messagesEl.querySelectorAll(".message-user"));
+  const label = summarizeQuestionLabel(
+    element.querySelector(".message-body")?.textContent || element.textContent || ""
+  );
+  element.dataset.questionIndex = String(index);
+  element.dataset.questionLabel = label;
+  return element;
 }
 
-function syncQuestionAnchors() {
-  const anchors = getQuestionAnchors();
-  anchors.forEach((element, index) => {
-    const label = summarizeQuestionLabel(
-      element.querySelector(".message-body")?.textContent || element.textContent || ""
-    );
-    element.dataset.questionIndex = String(index);
-    element.dataset.questionLabel = label;
-  });
-  return anchors;
+function rebuildQuestionAnchorsFromDom() {
+  if (!messagesEl) {
+    questionAnchorsCache = [];
+    return questionAnchorsCache;
+  }
+  questionAnchorsCache = Array.from(messagesEl.querySelectorAll(".message-user"))
+    .map((element, index) => prepareQuestionAnchor(element, index))
+    .filter(Boolean);
+  return questionAnchorsCache;
+}
+
+function setQuestionAnchors(elements) {
+  questionAnchorsCache = Array.isArray(elements)
+    ? elements.map((element, index) => prepareQuestionAnchor(element, index)).filter(Boolean)
+    : [];
+  return questionAnchorsCache;
+}
+
+function appendQuestionAnchor(element) {
+  if (!(element instanceof Element) || !element.classList.contains("message-user")) {
+    return;
+  }
+  questionAnchorsCache.push(element);
+  prepareQuestionAnchor(element, questionAnchorsCache.length - 1);
+}
+
+function currentQuestionAnchors() {
+  if (!questionAnchorsCache.length && messagesEl?.querySelector(".message-user")) {
+    return rebuildQuestionAnchorsFromDom();
+  }
+  return questionAnchorsCache;
 }
 
 function currentQuestionIndexFromScroll(anchors) {
@@ -1436,7 +1641,7 @@ function scrollToQuestion(index) {
   if (!messagesEl) {
     return;
   }
-  const anchors = syncQuestionAnchors();
+  const anchors = currentQuestionAnchors();
   const target = anchors[index];
   if (!target) {
     return;
@@ -1453,13 +1658,15 @@ function scrollToQuestion(index) {
   }, 220);
 }
 
-function renderQuestionNavigator(anchors) {
+function rebuildQuestionNavigator(anchors) {
   if (!chatQuestionTrackEl || !chatQuestionListEl || !chatQuestionNavEl) {
     return;
   }
 
   chatQuestionTrackEl.innerHTML = "";
   chatQuestionListEl.innerHTML = "";
+  questionMarkerEls = [];
+  questionItemEls = [];
 
   if (!anchors.length) {
     chatQuestionNavEl.classList.add("hidden");
@@ -1477,16 +1684,15 @@ function renderQuestionNavigator(anchors) {
     marker.className = "chat-question-marker";
     marker.title = label;
     marker.setAttribute("aria-label", `跳转到第 ${index + 1} 个问题：${label}`);
-    marker.classList.toggle("active", index === activeQuestionIndex);
     marker.addEventListener("click", () => {
       scrollToQuestion(index);
     });
     chatQuestionTrackEl.appendChild(marker);
+    questionMarkerEls.push(marker);
 
     const item = document.createElement("button");
     item.type = "button";
     item.className = "chat-question-item";
-    item.classList.toggle("active", index === activeQuestionIndex);
     item.title = label;
     item.addEventListener("click", () => {
       scrollToQuestion(index);
@@ -1503,21 +1709,34 @@ function renderQuestionNavigator(anchors) {
     item.appendChild(itemLabel);
     item.appendChild(itemIndex);
     chatQuestionListEl.appendChild(item);
+    questionItemEls.push(item);
   });
 }
 
-function updateChatScrollAffordances() {
-  const anchors = syncQuestionAnchors();
+function syncQuestionNavigatorActiveState() {
+  questionMarkerEls.forEach((element, index) => {
+    element.classList.toggle("active", index === activeQuestionIndex);
+  });
+  questionItemEls.forEach((element, index) => {
+    element.classList.toggle("active", index === activeQuestionIndex);
+  });
+}
+
+function updateChatScrollAffordances({ structureChanged = false } = {}) {
+  const anchors = currentQuestionAnchors();
+  if (structureChanged) {
+    rebuildQuestionNavigator(anchors);
+  }
   activeQuestionIndex = currentQuestionIndexFromScroll(anchors);
-  renderQuestionNavigator(anchors);
+  syncQuestionNavigatorActiveState();
   if (chatScrollBottomButtonEl) {
     chatScrollBottomButtonEl.classList.toggle("hidden", isMessagesNearBottom());
   }
 }
 
-function refreshChatNavigation() {
+function refreshChatNavigation({ structureChanged = false } = {}) {
   window.requestAnimationFrame(() => {
-    updateChatScrollAffordances();
+    updateChatScrollAffordances({ structureChanged });
   });
 }
 
@@ -1925,26 +2144,6 @@ function createWorklogNote(item) {
   };
 }
 
-function createStreamingThinkingNote() {
-  const article = document.createElement("article");
-  article.className = "trace-worklog-note trace-worklog-thinking";
-
-  const body = document.createElement("p");
-  body.textContent = "";
-  article.appendChild(body);
-
-  return {
-    element: article,
-    kind: "thinking-stream",
-    append(delta) {
-      body.textContent += delta;
-    },
-    hasContent() {
-      return body.textContent.trim().length > 0;
-    },
-  };
-}
-
 function createWorklogStatus(item) {
   const row = document.createElement("p");
   row.className = "trace-worklog-status";
@@ -1956,24 +2155,19 @@ function createWorklogStatus(item) {
   };
 }
 
-function renderTrace(wrapper, trace = [], warnings = []) {
-  if ((!Array.isArray(trace) || !trace.length) && (!Array.isArray(warnings) || !warnings.length)) {
-    return;
-  }
-
-  const details = document.createElement("details");
-  details.className = "message-trace";
-
-  const summary = document.createElement("summary");
+function formatTraceSummary(traceCount = 0, warningCount = 0) {
   const parts = [];
-  if (Array.isArray(trace) && trace.length) {
-    parts.push(`思考过程 ${trace.length} 条`);
+  if (traceCount) {
+    parts.push(`思考过程 ${traceCount} 条`);
   }
-  if (Array.isArray(warnings) && warnings.length) {
-    parts.push(`警告 ${warnings.length}`);
+  if (warningCount) {
+    parts.push(`警告 ${warningCount}`);
   }
-  summary.textContent = parts.join(" · ") || "思考过程";
-  details.appendChild(summary);
+  return parts.join(" · ") || "思考过程";
+}
+
+function buildHistoryTraceContent(trace = [], warnings = []) {
+  const fragment = document.createDocumentFragment();
 
   if (Array.isArray(trace) && trace.length) {
     const list = document.createElement("ol");
@@ -1981,7 +2175,7 @@ function renderTrace(wrapper, trace = [], warnings = []) {
     trace.forEach((item) => {
       list.appendChild(createTraceItem(item));
     });
-    details.appendChild(list);
+    fragment.appendChild(list);
   }
 
   if (Array.isArray(warnings) && warnings.length) {
@@ -2001,8 +2195,105 @@ function renderTrace(wrapper, trace = [], warnings = []) {
       warningList.appendChild(row);
     });
     warningBlock.appendChild(warningList);
-    details.appendChild(warningBlock);
+    fragment.appendChild(warningBlock);
   }
+
+  return fragment;
+}
+
+function buildStreamingTraceContent(trace = [], warnings = []) {
+  const fragment = document.createDocumentFragment();
+
+  if (Array.isArray(trace) && trace.length) {
+    const worklogEl = document.createElement("div");
+    worklogEl.className = "trace-worklog";
+    let lastWorklogEntry = null;
+
+    trace.forEach((item) => {
+      if (!item || typeof item !== "object") {
+        return;
+      }
+
+      if (item.kind === "thinking") {
+        const note = createWorklogNote(item);
+        note.element.classList.add("trace-worklog-thinking");
+        worklogEl.appendChild(note.element);
+        lastWorklogEntry = note;
+        return;
+      }
+
+      if (item.kind === "tool") {
+        const shouldReuseGroup =
+          lastWorklogEntry &&
+          lastWorklogEntry.kind === "tool-group" &&
+          lastWorklogEntry.action === (item.action || "tool");
+
+        if (shouldReuseGroup) {
+          lastWorklogEntry.add(item);
+          return;
+        }
+
+        const group = createWorklogGroup(item);
+        group.add(item);
+        worklogEl.appendChild(group.element);
+        lastWorklogEntry = group;
+        return;
+      }
+
+      const status = createWorklogStatus(item);
+      worklogEl.appendChild(status.element);
+      lastWorklogEntry = status;
+    });
+
+    fragment.appendChild(worklogEl);
+  }
+
+  if (Array.isArray(warnings) && warnings.length) {
+    const warningBlock = document.createElement("div");
+    warningBlock.className = "trace-warnings";
+
+    const warningTitle = document.createElement("p");
+    warningTitle.className = "trace-section-label";
+    warningTitle.textContent = "警告";
+    warningBlock.appendChild(warningTitle);
+
+    const warningList = document.createElement("ul");
+    warningList.className = "trace-warning-list";
+    warnings.forEach((item) => {
+      const row = document.createElement("li");
+      row.textContent = item;
+      warningList.appendChild(row);
+    });
+    warningBlock.appendChild(warningList);
+    fragment.appendChild(warningBlock);
+  }
+
+  return fragment;
+}
+
+function renderTrace(wrapper, trace = [], warnings = []) {
+  if ((!Array.isArray(trace) || !trace.length) && (!Array.isArray(warnings) || !warnings.length)) {
+    return;
+  }
+
+  const details = document.createElement("details");
+  details.className = "message-trace";
+
+  const summary = document.createElement("summary");
+  summary.textContent = formatTraceSummary(
+    Array.isArray(trace) ? trace.length : 0,
+    Array.isArray(warnings) ? warnings.length : 0
+  );
+  details.appendChild(summary);
+
+  let hasRenderedContent = false;
+  details.addEventListener("toggle", () => {
+    if (!details.open || hasRenderedContent) {
+      return;
+    }
+    details.appendChild(buildHistoryTraceContent(trace, warnings));
+    hasRenderedContent = true;
+  });
 
   wrapper.appendChild(details);
 }
@@ -2023,35 +2314,13 @@ function appendMessage(role, content, consultedPages = [], trace = [], warnings 
     console.warn("messagesEl not found, cannot append message");
     return;
   }
-
-  const wrapper = document.createElement("article");
-  wrapper.className = `message message-${role}`;
-  if (role === "user") {
-    wrapper.dataset.questionAnchor = "true";
-  }
-
-  if (role === "assistant") {
-    renderTrace(wrapper, trace, warnings);
-  }
-
-  const meta = createConsultedPagesMeta(consultedPages);
-
-  const body = document.createElement("div");
-  body.className = "message-body";
-  renderMessageBody(body, role, content);
-  wrapper.appendChild(body);
-
-  if (meta) {
-    wrapper.appendChild(meta);
-  }
-
-  if (role === "assistant") {
-    wrapper.appendChild(createAssistantActions(() => content));
-  }
-
+  const wrapper = createMessageElement(role, content, consultedPages, trace, warnings);
   messagesEl.appendChild(wrapper);
+  if (role === "user") {
+    appendQuestionAnchor(wrapper);
+  }
   scrollMessagesToBottom();
-  refreshChatNavigation();
+  refreshChatNavigation({ structureChanged: role === "user" });
 }
 
 function createStreamingAssistantMessage(initialText) {
@@ -2065,25 +2334,8 @@ function createStreamingAssistantMessage(initialText) {
   const summaryEl = document.createElement("summary");
   summaryEl.textContent = "思考过程";
   detailsEl.appendChild(summaryEl);
-
-  const worklogEl = document.createElement("div");
-  worklogEl.className = "trace-worklog";
-  detailsEl.appendChild(worklogEl);
-
-  const warningsBlockEl = document.createElement("div");
-  warningsBlockEl.className = "trace-warnings";
-  warningsBlockEl.hidden = true;
-
-  const warningsTitleEl = document.createElement("p");
-  warningsTitleEl.className = "trace-section-label";
-  warningsTitleEl.textContent = "警告";
-  warningsBlockEl.appendChild(warningsTitleEl);
-
-  const warningsListEl = document.createElement("ul");
-  warningsListEl.className = "trace-warning-list";
-  warningsBlockEl.appendChild(warningsListEl);
-
-  detailsEl.appendChild(warningsBlockEl);
+  const traceBodyHostEl = document.createElement("div");
+  detailsEl.appendChild(traceBodyHostEl);
   wrapper.appendChild(detailsEl);
 
   const bodyEl = document.createElement("div");
@@ -2106,24 +2358,19 @@ function createStreamingAssistantMessage(initialText) {
   let traceCount = 0;
   let warningCount = 0;
   let hasActualText = false;
-  let lastWorklogEntry = null;
-  let thinkingStreamNote = null;
   let rawContent = String(initialText || "");
   let consultedPagesState = [];
   let warningState = [];
   const traceState = [];
   let thinkingTraceItem = null;
+  let bodyRenderFrameId = 0;
+  let traceRenderFrameId = 0;
+  let traceBodyDirty = true;
 
   function updateTraceSummary() {
-    const parts = [];
-    if (traceCount) {
-      parts.push(`思考过程 ${traceCount} 条`);
-    }
-    if (warningCount) {
-      parts.push(`警告 ${warningCount}`);
-    }
-    summaryEl.textContent = parts.join(" · ") || "思考过程";
+    summaryEl.textContent = formatTraceSummary(traceCount, warningCount);
     detailsEl.hidden = !traceCount && !warningCount;
+    scheduleTraceBodyRender();
   }
 
   function setConsultedPages(pages = []) {
@@ -2142,31 +2389,84 @@ function createStreamingAssistantMessage(initialText) {
   }
 
   function setWarnings(warnings = []) {
-    warningsListEl.innerHTML = "";
     warningCount = Array.isArray(warnings) ? warnings.length : 0;
     warningState = Array.isArray(warnings) ? warnings.map((item) => String(item || "")) : [];
-    if (warningCount) {
-      warnings.forEach((item) => {
-        const row = document.createElement("li");
-        row.textContent = item;
-        warningsListEl.appendChild(row);
-      });
-      warningsBlockEl.hidden = false;
-    } else {
-      warningsBlockEl.hidden = true;
-    }
     updateTraceSummary();
     scrollMessagesToBottom();
   }
+
+  function flushBodyRender() {
+    if (bodyRenderFrameId) {
+      window.cancelAnimationFrame(bodyRenderFrameId);
+      bodyRenderFrameId = 0;
+    }
+    renderMessageBody(bodyEl, "assistant", rawContent);
+    actionsEl.hidden = !rawContent.trim();
+    scrollMessagesToBottom();
+  }
+
+  function scheduleBodyRender({ immediate = false } = {}) {
+    if (immediate) {
+      flushBodyRender();
+      return;
+    }
+    if (bodyRenderFrameId) {
+      return;
+    }
+    bodyRenderFrameId = window.requestAnimationFrame(() => {
+      bodyRenderFrameId = 0;
+      renderMessageBody(bodyEl, "assistant", rawContent);
+      actionsEl.hidden = !rawContent.trim();
+      scrollMessagesToBottom();
+    });
+  }
+
+  function flushTraceBodyRender() {
+    if (traceRenderFrameId) {
+      window.cancelAnimationFrame(traceRenderFrameId);
+      traceRenderFrameId = 0;
+    }
+    if (!detailsEl.open) {
+      traceBodyDirty = true;
+      return;
+    }
+    traceBodyHostEl.innerHTML = "";
+    traceBodyHostEl.appendChild(buildStreamingTraceContent(traceState, warningState));
+    traceBodyDirty = false;
+    scrollMessagesToBottom();
+  }
+
+  function scheduleTraceBodyRender({ immediate = false } = {}) {
+    if (!detailsEl.open) {
+      traceBodyDirty = true;
+      return;
+    }
+    if (immediate) {
+      flushTraceBodyRender();
+      return;
+    }
+    if (traceRenderFrameId) {
+      return;
+    }
+    traceRenderFrameId = window.requestAnimationFrame(() => {
+      traceRenderFrameId = 0;
+      flushTraceBodyRender();
+    });
+  }
+
+  detailsEl.addEventListener("toggle", () => {
+    if (!detailsEl.open || !traceBodyDirty) {
+      return;
+    }
+    scheduleTraceBodyRender({ immediate: true });
+  });
 
   return {
     element: wrapper,
     setContent(text) {
       rawContent = String(text || "");
       hasActualText = true;
-      renderMessageBody(bodyEl, "assistant", rawContent);
-      actionsEl.hidden = !rawContent.trim();
-      scrollMessagesToBottom();
+      scheduleBodyRender();
     },
     appendDelta(delta) {
       if (!delta) {
@@ -2177,19 +2477,11 @@ function createStreamingAssistantMessage(initialText) {
         hasActualText = true;
       }
       rawContent += delta;
-      renderMessageBody(bodyEl, "assistant", rawContent);
-      actionsEl.hidden = !rawContent.trim();
-      scrollMessagesToBottom();
+      scheduleBodyRender();
     },
     appendThinkingDelta(delta) {
       if (!delta) {
         return;
-      }
-      if (!thinkingStreamNote) {
-        thinkingStreamNote = createStreamingThinkingNote();
-        worklogEl.prepend(thinkingStreamNote.element);
-        traceCount += 1;
-        updateTraceSummary();
       }
       if (!thinkingTraceItem) {
         thinkingTraceItem = {
@@ -2200,9 +2492,11 @@ function createStreamingAssistantMessage(initialText) {
           event_type: "thinking_delta",
         };
         traceState.push(thinkingTraceItem);
+        traceCount += 1;
+        updateTraceSummary();
       }
       thinkingTraceItem.detail += delta;
-      thinkingStreamNote.append(delta);
+      scheduleTraceBodyRender();
       scrollMessagesToBottom();
     },
     setConsultedPages,
@@ -2212,46 +2506,26 @@ function createStreamingAssistantMessage(initialText) {
       }
       traceState.push({ ...item });
 
-      if (item.kind === "thinking") {
-        const note = createWorklogNote(item);
-        worklogEl.appendChild(note.element);
-        lastWorklogEntry = note;
-      } else if (item.kind === "tool") {
-        const shouldReuseGroup =
-          lastWorklogEntry &&
-          lastWorklogEntry.kind === "tool-group" &&
-          lastWorklogEntry.action === (item.action || "tool");
-
-        if (shouldReuseGroup) {
-          lastWorklogEntry.add(item);
-        } else {
-          const group = createWorklogGroup(item);
-          group.add(item);
-          worklogEl.appendChild(group.element);
-          lastWorklogEntry = group;
-        }
-      } else {
-        const status = createWorklogStatus(item);
-        worklogEl.appendChild(status.element);
-        lastWorklogEntry = status;
-      }
-
       traceCount += 1;
       updateTraceSummary();
+      scheduleTraceBodyRender();
       scrollMessagesToBottom();
     },
     setWarnings,
     finalize(payload = {}) {
       const finalMessage = typeof payload.message === "string" ? payload.message : "";
       if (finalMessage && (!hasActualText || finalMessage !== rawContent)) {
-        this.setContent(finalMessage);
+        rawContent = finalMessage;
+        hasActualText = true;
       }
+      flushBodyRender();
       if (Array.isArray(payload.consulted_pages)) {
         setConsultedPages(payload.consulted_pages);
       }
       if (Array.isArray(payload.warnings)) {
         setWarnings(payload.warnings);
       }
+      scheduleTraceBodyRender();
       actionsEl.hidden = !rawContent.trim();
     },
     getContent() {
@@ -2461,6 +2735,7 @@ function enterDraftState({ skipSave = false, showHint = true } = {}) {
   if (restoreSessionView(null)) {
     refreshChatPendingState();
     renderSessionList();
+    refreshLoadOlderButton();
     return;
   }
   if (showHint) {
@@ -2469,6 +2744,7 @@ function enterDraftState({ skipSave = false, showHint = true } = {}) {
   }
   refreshChatPendingState();
   renderSessionList();
+  refreshLoadOlderButton();
 }
 
 async function switchToSession(sessionId, { skipSave = false } = {}) {
@@ -2485,21 +2761,16 @@ async function switchToSession(sessionId, { skipSave = false } = {}) {
   currentSessionId = sessionId;
   history = loadSessionHistory(currentSessionId);
   rememberSessionId(currentSessionId);
-  try {
-    const session = await fetchSessionDetail(sessionId);
-    if (session) {
-      mergeSessionIntoCache(session);
-    }
-  } catch (error) {
-    console.warn("Failed to refresh current session detail:", error);
-  }
+  refreshLoadOlderButton();
+  void refreshCurrentSessionDetailInBackground(sessionId);
   if (restoreSessionView(sessionId)) {
     refreshChatPendingState();
     renderSessionList();
+    refreshLoadOlderButton();
     return;
   }
 
-  clearMessages();
+  clearMessages({ refreshNavigation: false });
 
   await hydrateSessionHistoryFromStore(sessionId);
   if (currentSessionId !== sessionId) {
@@ -2508,13 +2779,14 @@ async function switchToSession(sessionId, { skipSave = false } = {}) {
 
   const sessHistory = loadSessionHistory(sessionId);
   if (sessHistory.length > 0) {
-    renderHistory(sessHistory);
+    await renderHistory(sessHistory);
   } else {
     appendMessage("assistant", "这是会话的开始。");
   }
 
   refreshChatPendingState();
   renderSessionList();
+  refreshLoadOlderButton();
 }
 
 async function fetchSessions() {
@@ -2585,6 +2857,22 @@ async function fetchSessionDetail(sessionId) {
   }
   const payload = await response.json();
   return payload?.session || null;
+}
+
+async function refreshCurrentSessionDetailInBackground(sessionId) {
+  try {
+    const session = await fetchSessionDetail(sessionId);
+    if (!session) {
+      return;
+    }
+    mergeSessionIntoCache(session);
+    if (currentSessionId === sessionId) {
+      renderSessionList();
+      refreshChatControls();
+    }
+  } catch (error) {
+    console.warn("Failed to refresh current session detail:", error);
+  }
 }
 
 async function applyModelSelection(model) {
@@ -2782,6 +3070,7 @@ async function deleteSession(sessionId) {
 
     sessionHistories.delete(sessionId);
     sessionViewNodes.delete(getViewKey(sessionId));
+    sessionHistoryHasOlder.delete(sessionId);
     hydratedSessionIds.delete(sessionId);
     pendingSessionIds.delete(sessionId);
     if (currentStreamingSessionId === sessionId) {
@@ -2919,8 +3208,8 @@ async function sendMessage(message) {
     });
     sessionHistories.set(requestSessionId, requestHistory);
     if (requestSessionId === currentSessionId && !messagesEl.contains(liveMessage.element)) {
-      clearMessages();
-      renderHistory(requestHistory);
+      clearMessages({ refreshNavigation: false });
+      await renderHistory(requestHistory);
     } else if (requestSessionId === currentSessionId) {
       storeCurrentSessionView();
     }
@@ -3091,6 +3380,10 @@ slashButtonEl?.addEventListener("click", async () => {
   focusChatInput();
 });
 
+loadOlderButtonEl?.addEventListener("click", async () => {
+  await loadOlderHistoryForCurrentSession();
+});
+
 uploadButtonEl?.addEventListener("click", () => {
   if (uploadButtonEl.disabled || !uploadInputEl) {
     return;
@@ -3146,17 +3439,6 @@ thinkingButtonEl?.addEventListener("click", () => {
 
 async function bootstrapChat() {
   applySessionSidebarState(loadSessionSidebarState());
-  try {
-    await reloadPiOptions();
-  } catch (error) {
-    console.error("Failed to load Pi options:", error);
-    appendMessage("assistant", `加载模型与思考水平选项失败：${error.message}`);
-  }
-  try {
-    await loadSlashCommands();
-  } catch (error) {
-    console.error("Failed to load slash commands:", error);
-  }
   await reloadSessions();
 
   const rememberedSessionId = getRememberedSessionId();
@@ -3172,8 +3454,30 @@ async function bootstrapChat() {
   } else {
     enterDraftState({ skipSave: true });
   }
-  await refreshInboxFiles();
   refreshChatControls();
+
+  await nextAnimationFrame();
+  void warmStartupDataInBackground();
+}
+
+async function warmStartupDataInBackground() {
+  const startupTasks = await Promise.allSettled([
+    reloadPiOptions(),
+    loadSlashCommands(),
+    refreshInboxFiles(),
+  ]);
+  const [piOptionsResult, slashCommandsResult, inboxResult] = startupTasks;
+
+  if (piOptionsResult?.status === "rejected") {
+    console.error("Failed to load Pi options:", piOptionsResult.reason);
+    showSettingsHint(`加载模型与思考水平选项失败：${piOptionsResult.reason?.message || piOptionsResult.reason}`);
+  }
+  if (slashCommandsResult?.status === "rejected") {
+    console.error("Failed to load slash commands:", slashCommandsResult.reason);
+  }
+  if (inboxResult?.status === "rejected") {
+    console.error("Failed to load inbox files:", inboxResult.reason);
+  }
 }
 
 bootstrapChat();

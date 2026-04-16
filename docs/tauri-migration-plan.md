@@ -182,6 +182,9 @@ triggerPiLogin(providerKey)
   - 统一登录接口 `POST /api/settings/pi-login` 会通过该桥拉起系统终端中的交互式 `pi`
   - macOS 下会尽量自动输入原生 `/login`；若系统未授予自动输入权限，则退回为打开终端并提示用户手动执行
   - 前端会在触发后轮询 Provider 状态，检测到 `auth.json` 更新后自动刷新 Provider 与模型列表
+- 启动体验已做一轮低风险优化：
+  - 前端首屏优先恢复会话列表和最近活跃会话，`Pi options / slash / inbox` 改成后台预热
+  - Tauri 端等待 FastAPI 就绪的健康检查轮询间隔从 `300ms` 收紧到 `100ms`，减少打包版起窗前的固定颗粒度等待
 
 ## 9. 后端启动策略建议
 

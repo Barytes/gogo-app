@@ -37,6 +37,7 @@ PI_INTERRUPTED_USER_MESSAGE = "Pi 回复异常中断，本次请求已自动停�
 
 REGISTRY_FILENAME = "gogo-session-registry.json"
 APP_TURNS_DIRNAME = "gogo-session-turns"
+APP_TURNS_TAIL_READ_CHUNK_SIZE = 64 * 1024
 
 
 def _pi_rpc_extra_args(*args: str) -> list[str]:
@@ -115,6 +116,8 @@ class SessionPool:
     def __init__(self, max_sessions: int = 10, idle_timeout: int = 3600):
         self.max_sessions = max_sessions
         self.idle_timeout = idle_timeout
+        self._registry_touch_save_interval = 5.0
+        self._registry_last_saved_at = 0.0
         self._sessions: dict[str, SessionProcess] = {}
         self._lock = threading.RLock()
         self._cleanup_task: asyncio.Task | None = None
@@ -171,8 +174,14 @@ class SessionPool:
             encoding="utf-8",
         )
         temp_file.replace(self._registry_file)
+        self._registry_last_saved_at = time.time()
 
-    def _sync_registry_from_session(self, session: SessionProcess) -> None:
+    def _sync_registry_from_session(
+        self,
+        session: SessionProcess,
+        *,
+        force_save: bool = True,
+    ) -> None:
         self._registry[session.session_id] = {
             "session_id": session.session_id,
             "session_file": session.session_file,
@@ -186,7 +195,11 @@ class SessionPool:
             "last_used_at": session.info.last_used_at,
             "message_count": session.info.message_count,
         }
-        self._save_registry()
+        if force_save:
+            self._save_registry()
+            return
+        if time.time() - self._registry_last_saved_at >= self._registry_touch_save_interval:
+            self._save_registry()
 
     def _remove_registry_session(self, session_id: str) -> None:
         if session_id in self._registry:
@@ -257,36 +270,91 @@ class SessionPool:
                 handle.write(json.dumps(normalized, ensure_ascii=False))
                 handle.write("\n")
 
+    def _slice_history_window(
+        self,
+        history: list[dict[str, Any]],
+        *,
+        max_turns: int,
+        offset_turns: int = 0,
+    ) -> list[dict[str, Any]]:
+        if not history:
+            return []
+        if offset_turns > 0:
+            if offset_turns >= len(history):
+                return []
+            history = history[:-offset_turns]
+        if max_turns > 0 and len(history) > max_turns:
+            history = history[-max_turns:]
+        return history
+
+    def _read_app_turn_tail_lines(
+        self,
+        *,
+        path: Path,
+        max_lines: int,
+    ) -> list[str]:
+        if max_lines <= 0:
+            return []
+        with path.open("rb") as handle:
+            handle.seek(0, 2)
+            position = handle.tell()
+            buffer = b""
+            lines: list[bytes] = []
+
+            while position > 0 and len(lines) < max_lines:
+                read_size = min(APP_TURNS_TAIL_READ_CHUNK_SIZE, position)
+                position -= read_size
+                handle.seek(position)
+                chunk = handle.read(read_size)
+                if not chunk:
+                    break
+                buffer = chunk + buffer
+                parts = buffer.splitlines()
+                if position > 0:
+                    buffer = parts[0] if parts else buffer
+                    lines = parts[1:]
+                else:
+                    buffer = b""
+                    lines = parts
+
+            tail_lines = lines[-max_lines:]
+            return [
+                line.decode("utf-8", errors="ignore").strip()
+                for line in tail_lines
+                if line.strip()
+            ]
+
     def _load_history_from_app_turns(
         self,
         *,
         session_id: str,
         max_turns: int,
+        offset_turns: int = 0,
     ) -> list[dict[str, Any]] | None:
         path = self._turns_file(session_id)
         if not path.exists():
             return None
         turns: list[dict[str, Any]] = []
         try:
-            with path.open("r", encoding="utf-8") as handle:
-                for raw_line in handle:
-                    line = raw_line.strip()
-                    if not line:
-                        continue
-                    try:
-                        item = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    normalized = self._normalize_history_turn(item)
-                    if normalized:
-                        turns.append(normalized)
+            if max_turns > 0:
+                requested_window = max_turns + max(offset_turns, 0)
+                raw_lines = self._read_app_turn_tail_lines(path=path, max_lines=requested_window)
+            else:
+                with path.open("r", encoding="utf-8") as handle:
+                    raw_lines = [raw_line.strip() for raw_line in handle if raw_line.strip()]
+            for line in raw_lines:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                normalized = self._normalize_history_turn(item)
+                if normalized:
+                    turns.append(normalized)
         except Exception:
             logger.warning("Failed to load app turn history: %s", path, exc_info=True)
             return None
 
-        if max_turns > 0 and len(turns) > max_turns:
-            return turns[-max_turns:]
-        return turns
+        return self._slice_history_window(turns, max_turns=max_turns, offset_turns=offset_turns)
 
     def _persist_exchange_turns(
         self,
@@ -529,7 +597,7 @@ class SessionPool:
             session = self._sessions.get(session_id)
             if session:
                 session.info.last_used_at = time.time()
-                self._sync_registry_from_session(session)
+                self._sync_registry_from_session(session, force_save=False)
             return session
 
     def list_sessions(self) -> list[dict[str, Any]]:
@@ -1311,6 +1379,7 @@ class SessionPool:
         *,
         session: SessionProcess,
         max_turns: int,
+        offset_turns: int = 0,
     ) -> list[dict[str, str]] | None:
         if not session.session_file:
             return None
@@ -1340,7 +1409,9 @@ class SessionPool:
             messages = _run_coro_sync(fetch_messages())
             if not isinstance(messages, list):
                 return []
-            return self._history_from_agent_messages(messages=messages, max_turns=max_turns)
+            requested_window = max_turns + max(offset_turns, 0)
+            history = self._history_from_agent_messages(messages=messages, max_turns=requested_window)
+            return self._slice_history_window(history, max_turns=max_turns, offset_turns=offset_turns)
         except Exception:
             logger.warning(
                 "Failed to load history via RPC for session %s",
@@ -1356,6 +1427,7 @@ class SessionPool:
         *,
         session_file: str,
         max_turns: int,
+        offset_turns: int = 0,
     ) -> list[dict[str, str]] | None:
         path = Path(session_file).expanduser()
         if not path.exists():
@@ -1413,12 +1485,20 @@ class SessionPool:
             if isinstance(message, dict):
                 messages.append(message)
 
-        return self._history_from_agent_messages(messages=messages, max_turns=max_turns)
+        requested_window = max_turns + max(offset_turns, 0)
+        history = self._history_from_agent_messages(messages=messages, max_turns=requested_window)
+        return self._slice_history_window(history, max_turns=max_turns, offset_turns=offset_turns)
 
-    def replay_history(self, session_id: str, max_turns: int = 200) -> list[dict[str, Any]]:
+    def replay_history(
+        self,
+        session_id: str,
+        max_turns: int = 200,
+        offset_turns: int = 0,
+    ) -> list[dict[str, Any]]:
         app_turns = self._load_history_from_app_turns(
             session_id=session_id,
             max_turns=max_turns,
+            offset_turns=offset_turns,
         )
 
         with self._lock:
@@ -1438,8 +1518,20 @@ class SessionPool:
                     session.info.message_count = int(record.get("message_count") or 0)
                     self._sessions[session_id] = session
 
+        # Fast path: for normal gogo-app-created sessions, app turn history already
+        # contains the exact user/assistant turns plus richer UI metadata
+        # (trace/consulted pages/warnings). Replaying it directly avoids spawning a
+        # fresh Pi RPC client and calling get_messages() every time the user opens a
+        # session, which was a visible source of startup/switch latency.
+        if app_turns and session and not session.info.pending_request_id:
+            return app_turns
+
         if session:
-            online = self._load_history_via_rpc(session=session, max_turns=max_turns)
+            online = self._load_history_via_rpc(
+                session=session,
+                max_turns=max_turns,
+                offset_turns=offset_turns,
+            )
             if online is not None:
                 merged_online = self._merge_rich_history_tail(online, app_turns or [])
                 if merged_online is not None:
@@ -1454,6 +1546,7 @@ class SessionPool:
                 offline = self._load_history_from_native_jsonl(
                     session_file=session.session_file,
                     max_turns=max_turns,
+                    offset_turns=offset_turns,
                 )
                 if offline is not None:
                     merged_offline = self._merge_rich_history_tail(offline, app_turns or [])
