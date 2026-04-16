@@ -220,8 +220,22 @@
 	                      </button>
 	                      <div id="chat-thinking-menu" class="chat-control-menu hidden" role="menu"></div>
 	                    </div>
+	                    <button
+	                      id="chat-slash-button"
+	                      class="chat-control-button chat-control-icon-button"
+	                      type="button"
+	                      aria-label="打开 slash 命令"
+                        aria-expanded="false"
+	                      title="Slash 命令"
+	                    >
+	                      /
+	                    </button>
 	                  </div>
 	                  <p id="chat-settings-hint" class="chat-settings-hint hidden" aria-live="polite"></p>
+                    <div id="chat-slash-panel" class="chat-slash-panel hidden" role="listbox" aria-label="slash 命令列表">
+                      <div class="chat-slash-panel-header">当前知识库命令</div>
+                      <div id="chat-slash-list" class="chat-slash-list"></div>
+                    </div>
 	                  <textarea
 	                    id="chat-input"
 	                    name="message"
@@ -283,6 +297,9 @@
 		              <button id="settings-nav-knowledge-base" class="settings-nav-button active" type="button" data-settings-section="knowledge-base" aria-pressed="true">
 		                知识库
 		              </button>
+		              <button id="settings-nav-current-skills" class="settings-nav-button" type="button" data-settings-section="current-skills" aria-pressed="false">
+		                当前技能
+		              </button>
 		              <button id="settings-nav-model-providers" class="settings-nav-button" type="button" data-settings-section="model-providers" aria-pressed="false">
 		                模型
 		              </button>
@@ -316,6 +333,77 @@
 		                    <div id="knowledge-base-recent-list" class="settings-chip-list"></div>
 		                  </div>
 		                  <p id="knowledge-base-settings-feedback" class="settings-feedback hidden" aria-live="polite"></p>
+		                </div>
+		              </section>
+		              <section id="settings-section-current-skills" class="settings-section-pane" data-settings-section-pane="current-skills">
+		                <div class="settings-section">
+		                  <div>
+		                    <p class="settings-subtitle">当前技能</p>
+		                    <p class="settings-help">
+		                      这里展示当前知识库会被识别为 slash 命令来源的 skills 与 schemas。列表和 Chat 输入框中的 slash 自动补全共用同一套目录。
+		                    </p>
+		                  </div>
+		                  <div id="capability-summary-chips" class="settings-chip-list"></div>
+		                  <div class="settings-capability-layout">
+		                    <div class="settings-capability-browser">
+		                      <div class="settings-capability-toolbar">
+		                        <p class="settings-subtitle">已挂钩能力</p>
+		                        <div class="settings-capability-toolbar-actions">
+		                          <button id="create-skill-button" class="button button-secondary" type="button">新建 Skill</button>
+		                          <button id="create-schema-button" class="button button-secondary" type="button">新建 Schema</button>
+		                          <button id="refresh-capability-list" class="button button-secondary" type="button">刷新</button>
+		                        </div>
+		                      </div>
+		                      <div class="settings-capability-create-shell">
+		                        <input
+		                          id="capability-create-name-input"
+		                          class="settings-input"
+		                          type="text"
+		                          placeholder="输入要创建的 skill / schema 名称"
+		                        />
+		                        <p class="settings-help">输入名称后，点击“新建 Skill”或“新建 Schema”会生成一个最小模板。</p>
+		                      </div>
+		                      <div id="capability-list" class="settings-capability-list"></div>
+		                      <p id="capability-empty" class="settings-help hidden">当前知识库还没有识别到 skills 或 schemas。</p>
+		                    </div>
+		                    <div class="settings-capability-editor-card">
+		                      <div class="settings-capability-editor-header">
+		                        <div>
+		                          <p id="capability-editor-title" class="settings-subtitle">选择一个 skill 或 schema</p>
+		                          <p id="capability-editor-path" class="settings-help">将在这里显示当前能力定义的路径与类型。</p>
+		                        </div>
+		                      </div>
+		                      <textarea
+		                        id="capability-editor-input"
+		                        class="settings-input settings-textarea settings-monospace"
+		                        rows="18"
+		                        placeholder="选择左侧条目后即可查看和编辑原始定义。"
+		                      ></textarea>
+		                      <p id="capability-settings-feedback" class="settings-feedback hidden" aria-live="polite"></p>
+		                      <div id="capability-agents-guidance" class="settings-capability-guidance hidden">
+		                        <p class="settings-capability-guidance-title">更新 AGENTS.md</p>
+		                        <p id="capability-agents-guidance-text" class="settings-help">
+		                          新增或更新主 skill/schema 后，请把下面片段补充到知识库根目录的 <code>AGENTS.md</code>。更新后需要在新会话中生效。
+		                        </p>
+		                        <textarea
+		                          id="capability-agents-guidance-snippet"
+		                          class="settings-input settings-textarea settings-monospace"
+		                          rows="4"
+		                          readonly
+		                          placeholder="这里会显示建议粘贴到 AGENTS.md 的片段。"
+		                        ></textarea>
+		                        <div class="settings-actions">
+		                          <button id="copy-capability-agents-snippet" class="button button-secondary" type="button">复制片段</button>
+		                          <button id="open-capability-agents-button" class="button button-secondary" type="button">打开 AGENTS.md</button>
+		                        </div>
+		                      </div>
+		                      <div class="settings-actions">
+		                        <button id="delete-capability-button" class="button button-danger-subtle" type="button">删除当前项</button>
+		                        <button id="reset-capability-button" class="button button-secondary" type="button">重置</button>
+		                        <button id="save-capability-button" class="button button-primary" type="button">保存</button>
+		                      </div>
+		                    </div>
+		                  </div>
 		                </div>
 		              </section>
 		              <section id="settings-section-model-providers" class="settings-section-pane" data-settings-section-pane="model-providers">

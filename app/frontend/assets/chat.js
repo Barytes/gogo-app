@@ -23,6 +23,9 @@ const modelButtonEl = document.querySelector("#chat-model-button");
 const modelMenuEl = document.querySelector("#chat-model-menu");
 const thinkingButtonEl = document.querySelector("#chat-thinking-button");
 const thinkingMenuEl = document.querySelector("#chat-thinking-menu");
+const slashButtonEl = document.querySelector("#chat-slash-button");
+const slashPanelEl = document.querySelector("#chat-slash-panel");
+const slashListEl = document.querySelector("#chat-slash-list");
 const settingsHintEl = document.querySelector("#chat-settings-hint");
 const sessionListEl = document.querySelector("#session-list");
 const sessionListEmptyEl = document.querySelector("#session-list-empty");
@@ -88,6 +91,10 @@ let inboxLoading = false;
 let highlightedInboxPath = "";
 const inboxDeletingPaths = new Set();
 const INBOX_INGEST_PROMPT = "请ingest一下inbox的内容。";
+let availableSlashCommands = [];
+let slashPanelVisible = false;
+let slashPanelManual = false;
+let slashPanelActiveIndex = 0;
 let activeQuestionIndex = -1;
 let chatQuestionPopoverHideTimer = null;
 
@@ -103,7 +110,7 @@ function openChatQuestionPopover() {
   chatQuestionNavEl?.classList.add("is-open");
 }
 
-function scheduleChatQuestionPopoverHide(delay = 850) {
+function scheduleChatQuestionPopoverHide(delay = 500) {
   clearChatQuestionPopoverHideTimer();
   chatQuestionPopoverHideTimer = window.setTimeout(() => {
     chatQuestionNavEl?.classList.remove("is-open");
@@ -257,6 +264,253 @@ function refreshSettingsHintState() {
     window.clearTimeout(settingsHintTimer);
     settingsHintTimer = null;
   }
+}
+
+function normalizeSlashCommandItem(item) {
+  if (!item || typeof item !== "object") {
+    return null;
+  }
+  const command = String(item.command || "").trim().replace(/^\/+/, "");
+  if (!command) {
+    return null;
+  }
+  return {
+    command,
+    name: String(item.name || command).trim() || command,
+    description: String(item.description || "").trim(),
+    path: String(item.path || "").trim(),
+    source: String(item.source || "skill").trim() || "skill",
+  };
+}
+
+async function loadSlashCommands() {
+  const response = await fetch("/api/knowledge-base/slash-commands");
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail || `HTTP ${response.status}`);
+  }
+  availableSlashCommands = Array.isArray(payload?.items)
+    ? payload.items.map(normalizeSlashCommandItem).filter(Boolean)
+    : [];
+}
+
+function closeSlashPanel() {
+  slashPanelVisible = false;
+  slashPanelManual = false;
+  slashPanelActiveIndex = 0;
+  slashPanelEl?.classList.add("hidden");
+  if (slashListEl) {
+    slashListEl.innerHTML = "";
+  }
+  slashButtonEl?.setAttribute("aria-expanded", "false");
+}
+
+function getSlashContext() {
+  if (!inputEl) {
+    return null;
+  }
+  const selectionStart = Number(inputEl.selectionStart ?? inputEl.value.length);
+  const textBeforeCursor = inputEl.value.slice(0, selectionStart);
+  const match = textBeforeCursor.match(/(^|\s)\/([a-z0-9-]*)$/i);
+  if (!match) {
+    return null;
+  }
+  const query = String(match[2] || "").toLowerCase();
+  return {
+    query,
+    replaceFrom: selectionStart - query.length - 1,
+    replaceTo: selectionStart,
+  };
+}
+
+function filteredSlashCommands() {
+  const context = getSlashContext();
+  const query = slashPanelManual ? (context?.query || "") : (context?.query || "");
+  if (!query) {
+    return availableSlashCommands;
+  }
+  return availableSlashCommands.filter((item) => {
+    const haystacks = [
+      item.command,
+      item.name,
+      item.description,
+    ].map((value) => String(value || "").toLowerCase());
+    return haystacks.some((value) => value.includes(query));
+  });
+}
+
+function groupedSlashCommands(items) {
+  return [
+    ["Skills", items.filter((item) => item.source !== "schema")],
+    ["Schemas", items.filter((item) => item.source === "schema")],
+  ].filter(([, groupItems]) => groupItems.length);
+}
+
+function renderSlashPanel() {
+  if (!slashPanelEl || !slashListEl) {
+    return;
+  }
+  const items = filteredSlashCommands();
+  slashListEl.innerHTML = "";
+
+  if (!slashPanelVisible) {
+    slashPanelEl.classList.add("hidden");
+    slashButtonEl?.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  slashPanelEl.classList.remove("hidden");
+  slashButtonEl?.setAttribute("aria-expanded", "true");
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "chat-slash-empty";
+    empty.textContent = availableSlashCommands.length
+      ? "没有匹配到 slash 命令。"
+      : "当前知识库还没有可用的 skills 或 schemas。";
+    slashListEl.appendChild(empty);
+    return;
+  }
+
+  slashPanelActiveIndex = Math.max(0, Math.min(slashPanelActiveIndex, items.length - 1));
+
+  let absoluteIndex = 0;
+  groupedSlashCommands(items).forEach(([label, groupItems]) => {
+    const groupLabel = document.createElement("div");
+    groupLabel.className = "chat-slash-group-label";
+    groupLabel.textContent = label;
+    slashListEl.appendChild(groupLabel);
+
+    groupItems.forEach((item) => {
+      const index = absoluteIndex;
+      absoluteIndex += 1;
+
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "chat-slash-item";
+      button.classList.toggle("active", index === slashPanelActiveIndex);
+      button.setAttribute("role", "option");
+      button.setAttribute("aria-selected", String(index === slashPanelActiveIndex));
+
+      const command = document.createElement("div");
+      command.className = "chat-slash-item-command";
+
+      const badge = document.createElement("span");
+      badge.className = `chat-slash-badge ${item.source === "schema" ? "schema" : "skill"}`;
+      badge.textContent = item.source === "schema" ? "Schema" : "Skill";
+
+      const commandText = document.createElement("span");
+      commandText.textContent = `/${item.command}`;
+
+      const description = document.createElement("div");
+      description.className = "chat-slash-item-description";
+      description.textContent = item.description || item.path || item.name;
+
+      command.appendChild(badge);
+      command.appendChild(commandText);
+      button.appendChild(command);
+      button.appendChild(description);
+      button.addEventListener("mousedown", (event) => {
+        event.preventDefault();
+      });
+      button.addEventListener("click", () => {
+        applySlashCommand(item);
+      });
+      slashListEl.appendChild(button);
+    });
+  });
+
+  const activeItem = slashListEl.querySelector(".chat-slash-item.active");
+  if (activeItem instanceof HTMLElement) {
+    activeItem.scrollIntoView({ block: "nearest" });
+  }
+}
+
+function openSlashPanel({ manual = false } = {}) {
+  slashPanelVisible = true;
+  slashPanelManual = Boolean(manual);
+  slashPanelActiveIndex = 0;
+  renderSlashPanel();
+}
+
+function refreshSlashPanelFromInput() {
+  const hasContext = Boolean(getSlashContext());
+  if (hasContext) {
+    slashPanelVisible = true;
+    slashPanelManual = false;
+    slashPanelActiveIndex = 0;
+    renderSlashPanel();
+    return;
+  }
+  if (slashPanelManual && slashPanelVisible) {
+    renderSlashPanel();
+    return;
+  }
+  closeSlashPanel();
+}
+
+function insertTextAtCursor(text) {
+  if (!inputEl) {
+    return;
+  }
+  const start = Number(inputEl.selectionStart ?? inputEl.value.length);
+  const end = Number(inputEl.selectionEnd ?? start);
+  inputEl.setRangeText(text, start, end, "end");
+  inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+  refreshChatPendingState();
+  focusChatInput();
+}
+
+function applySlashCommand(item) {
+  if (!inputEl || !item) {
+    return;
+  }
+  const text = `/${item.command} `;
+  const context = getSlashContext();
+  if (context) {
+    inputEl.setRangeText(text, context.replaceFrom, context.replaceTo, "end");
+    inputEl.dispatchEvent(new Event("input", { bubbles: true }));
+    refreshChatPendingState();
+    closeSlashPanel();
+    focusChatInput();
+    return;
+  }
+  insertTextAtCursor(text);
+  closeSlashPanel();
+}
+
+function handleSlashPanelKeydown(event) {
+  if (!slashPanelVisible) {
+    return false;
+  }
+  const items = filteredSlashCommands();
+  if (event.key === "ArrowDown") {
+    event.preventDefault();
+    if (items.length) {
+      slashPanelActiveIndex = (slashPanelActiveIndex + 1) % items.length;
+      renderSlashPanel();
+    }
+    return true;
+  }
+  if (event.key === "ArrowUp") {
+    event.preventDefault();
+    if (items.length) {
+      slashPanelActiveIndex = (slashPanelActiveIndex - 1 + items.length) % items.length;
+      renderSlashPanel();
+    }
+    return true;
+  }
+  if ((event.key === "Enter" || event.key === "Tab") && items.length) {
+    event.preventDefault();
+    applySlashCommand(items[slashPanelActiveIndex] || items[0]);
+    return true;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeSlashPanel();
+    return true;
+  }
+  return false;
 }
 
 function formatInboxFileSize(sizeBytes) {
@@ -1389,6 +1643,10 @@ window.ChatWorkbench = {
   focusInput: focusChatInput,
   injectPrompt,
   reloadPiOptions,
+  reloadSlashCommands: async () => {
+    await loadSlashCommands();
+    refreshSlashPanelFromInput();
+  },
 };
 
 messagesEl?.addEventListener("scroll", () => {
@@ -2712,6 +2970,7 @@ async function submitCurrentMessage() {
   if (!message) {
     return;
   }
+  closeSlashPanel();
   shouldAutoScrollMessages = true;
   inputEl.value = "";
   await sendMessage(message);
@@ -2730,6 +2989,9 @@ inputEl?.addEventListener("keydown", async (event) => {
   if (currentSessionId && pendingSessionIds.has(currentSessionId)) {
     return;
   }
+  if (handleSlashPanelKeydown(event)) {
+    return;
+  }
   if (
     event.key !== "Enter" ||
     event.shiftKey ||
@@ -2746,6 +3008,7 @@ inputEl?.addEventListener("keydown", async (event) => {
 
 inputEl?.addEventListener("input", () => {
   refreshChatPendingState();
+  refreshSlashPanelFromInput();
 });
 
 newSessionButtonEl?.addEventListener("click", () => {
@@ -2781,9 +3044,18 @@ document.addEventListener("click", (event) => {
     openSessionMenuId = null;
     renderSessionList();
   }
+  if (!target.closest("#chat-slash-panel") && !target.closest("#chat-slash-button") && target !== inputEl) {
+    closeSlashPanel();
+  }
 });
 
 document.addEventListener("keydown", (event) => {
+  if (event.defaultPrevented) {
+    return;
+  }
+  if (slashPanelVisible && event.target !== inputEl && handleSlashPanelKeydown(event)) {
+    return;
+  }
   if (event.key !== "Escape") {
     return;
   }
@@ -2795,6 +3067,28 @@ document.addEventListener("keydown", (event) => {
     openSessionMenuId = null;
     renderSessionList();
   }
+  closeSlashPanel();
+});
+
+slashPanelEl?.addEventListener("mouseenter", () => {
+  inputEl?.focus({ preventScroll: true });
+});
+
+slashButtonEl?.addEventListener("click", async () => {
+  if (slashPanelVisible && slashPanelManual) {
+    closeSlashPanel();
+    return;
+  }
+  try {
+    if (!availableSlashCommands.length) {
+      await loadSlashCommands();
+    }
+  } catch (error) {
+    showSettingsHint(`加载 slash 命令失败：${error.message}`);
+    return;
+  }
+  openSlashPanel({ manual: true });
+  focusChatInput();
 });
 
 uploadButtonEl?.addEventListener("click", () => {
@@ -2857,6 +3151,11 @@ async function bootstrapChat() {
   } catch (error) {
     console.error("Failed to load Pi options:", error);
     appendMessage("assistant", `加载模型与思考水平选项失败：${error.message}`);
+  }
+  try {
+    await loadSlashCommands();
+  } catch (error) {
+    console.error("Failed to load slash commands:", error);
   }
   await reloadSessions();
 

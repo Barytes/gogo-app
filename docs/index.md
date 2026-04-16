@@ -25,6 +25,7 @@
 - [agent-session-refactor-assessment.md](agent-session-refactor-assessment.md) - Agent/Session 重构评估与里程碑
 - [frontend-workbench-elements.md](frontend-workbench-elements.md) - 前端工作台页面元素、状态与交互实现说明
 - [model-provider-configuration-options.md](model-provider-configuration-options.md) - 用户自定义 model provider 的可选方案、取舍与推荐路线
+- [slash-command-scope.md](slash-command-scope.md) - slash 命令的来源边界、候选范围、取舍与推荐决策
 
 ## 规范与映射
 

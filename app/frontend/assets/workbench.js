@@ -18,6 +18,25 @@ const knowledgeBaseRecentListEl = document.querySelector("#knowledge-base-recent
 const knowledgeBaseFeedbackEl = document.querySelector("#knowledge-base-settings-feedback");
 const applyKnowledgeBasePathButtonEl = document.querySelector("#apply-knowledge-base-path");
 const pickKnowledgeBasePathButtonEl = document.querySelector("#pick-knowledge-base-path");
+const capabilitySummaryChipsEl = document.querySelector("#capability-summary-chips");
+const capabilityListEl = document.querySelector("#capability-list");
+const capabilityEmptyEl = document.querySelector("#capability-empty");
+const capabilityEditorTitleEl = document.querySelector("#capability-editor-title");
+const capabilityEditorPathEl = document.querySelector("#capability-editor-path");
+const capabilityEditorInputEl = document.querySelector("#capability-editor-input");
+const capabilityFeedbackEl = document.querySelector("#capability-settings-feedback");
+const capabilityAgentsGuidanceEl = document.querySelector("#capability-agents-guidance");
+const capabilityAgentsGuidanceTextEl = document.querySelector("#capability-agents-guidance-text");
+const capabilityAgentsGuidanceSnippetEl = document.querySelector("#capability-agents-guidance-snippet");
+const copyCapabilityAgentsSnippetButtonEl = document.querySelector("#copy-capability-agents-snippet");
+const openCapabilityAgentsButtonEl = document.querySelector("#open-capability-agents-button");
+const refreshCapabilityListButtonEl = document.querySelector("#refresh-capability-list");
+const deleteCapabilityButtonEl = document.querySelector("#delete-capability-button");
+const resetCapabilityButtonEl = document.querySelector("#reset-capability-button");
+const saveCapabilityButtonEl = document.querySelector("#save-capability-button");
+const createSkillButtonEl = document.querySelector("#create-skill-button");
+const createSchemaButtonEl = document.querySelector("#create-schema-button");
+const capabilityCreateNameInputEl = document.querySelector("#capability-create-name-input");
 
 const providerProfileListEl = document.querySelector("#provider-profile-list");
 const providerProfileEmptyEl = document.querySelector("#provider-profile-empty");
@@ -78,6 +97,21 @@ const diagnosticsState = {
   loading: false,
   loadedAt: 0,
   data: null,
+};
+const capabilityState = {
+  loading: false,
+  loaded: false,
+  fileLoading: false,
+  saving: false,
+  items: [],
+  selectedPath: "",
+  savedContent: "",
+};
+const capabilityAgentsGuidanceState = {
+  active: false,
+  path: "",
+  snippet: "",
+  text: "",
 };
 let desktopPiLoginPollToken = 0;
 const desktopBridge =
@@ -234,6 +268,38 @@ function showSettingsToast(message, variant = "success", duration = 2800) {
   }, duration);
 }
 
+async function copyTextToClipboard(text) {
+  const value = String(text || "");
+  if (!value.trim()) {
+    return false;
+  }
+  try {
+    if (navigator?.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch (_error) {
+    // Fall through to textarea copy fallback.
+  }
+  const textArea = document.createElement("textarea");
+  textArea.value = value;
+  textArea.setAttribute("readonly", "readonly");
+  textArea.style.position = "fixed";
+  textArea.style.opacity = "0";
+  textArea.style.pointerEvents = "none";
+  document.body.appendChild(textArea);
+  textArea.focus();
+  textArea.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch (_error) {
+    copied = false;
+  }
+  textArea.remove();
+  return copied;
+}
+
 function setKnowledgeBaseFeedback(message, isError = false) {
   setFeedback(knowledgeBaseFeedbackEl, message, isError);
 }
@@ -246,10 +312,525 @@ function setDiagnosticsFeedback(message, isError = false) {
   setFeedback(diagnosticsFeedbackEl, message, isError);
 }
 
+function setCapabilityFeedback(message, isError = false) {
+  setFeedback(capabilityFeedbackEl, message, isError);
+}
+
 function clearSettingsFeedback() {
   setKnowledgeBaseFeedback("");
+  setCapabilityFeedback("");
   setProviderFeedback("");
   setDiagnosticsFeedback("");
+}
+
+function capabilityItems() {
+  return Array.isArray(capabilityState.items) ? capabilityState.items : [];
+}
+
+function groupedCapabilityItems() {
+  const groups = new Map();
+  capabilityItems().forEach((item) => {
+    const label = String(item?.group || "Other").trim() || "Other";
+    if (!groups.has(label)) {
+      groups.set(label, []);
+    }
+    groups.get(label).push(item);
+  });
+  return Array.from(groups.entries());
+}
+
+function capabilityByPath(path) {
+  const target = String(path || "").trim();
+  return capabilityItems().find((item) => String(item?.path || "").trim() === target) || null;
+}
+
+function capabilityHasUnsavedChanges() {
+  if (!capabilityEditorInputEl || !capabilityState.selectedPath) {
+    return false;
+  }
+  return capabilityEditorInputEl.value !== capabilityState.savedContent;
+}
+
+function buildAgentsSnippet(item) {
+  if (!item) {
+    return "";
+  }
+  const path = String(item.path || "").trim();
+  if (!path) {
+    return "";
+  }
+  if (item.source === "skill") {
+    const name = String(item.name || item.command || path).trim();
+    return `- 如需使用技能“${name}”，请先阅读 \`${path}\` 并按其中流程执行。`;
+  }
+  if (item.source === "schema") {
+    const name = String(item.name || item.command || path).trim();
+    return `- 如需按结构化格式使用“${name}”，请先阅读 \`${path}\` 并严格遵循其中定义。`;
+  }
+  return "";
+}
+
+function showCapabilityAgentsGuidance(item) {
+  const snippet = buildAgentsSnippet(item);
+  if (!snippet) {
+    capabilityAgentsGuidanceState.active = false;
+    capabilityAgentsGuidanceState.path = "";
+    capabilityAgentsGuidanceState.snippet = "";
+    capabilityAgentsGuidanceState.text = "";
+    renderCapabilityAgentsGuidance();
+    return;
+  }
+  capabilityAgentsGuidanceState.active = true;
+  capabilityAgentsGuidanceState.path = String(item.path || "");
+  capabilityAgentsGuidanceState.snippet = snippet;
+  capabilityAgentsGuidanceState.text =
+    "请把下面片段补充到知识库根目录的 `AGENTS.md`。更新后需要在新会话中生效，已有会话不会自动获得这项能力。";
+  renderCapabilityAgentsGuidance();
+}
+
+function hideCapabilityAgentsGuidance() {
+  capabilityAgentsGuidanceState.active = false;
+  capabilityAgentsGuidanceState.path = "";
+  capabilityAgentsGuidanceState.snippet = "";
+  capabilityAgentsGuidanceState.text = "";
+  renderCapabilityAgentsGuidance();
+}
+
+function renderCapabilityAgentsGuidance() {
+  if (!capabilityAgentsGuidanceEl || !capabilityAgentsGuidanceSnippetEl || !capabilityAgentsGuidanceTextEl) {
+    return;
+  }
+  const shouldShow = capabilityAgentsGuidanceState.active && capabilityAgentsGuidanceState.snippet;
+  capabilityAgentsGuidanceEl.classList.toggle("hidden", !shouldShow);
+  capabilityAgentsGuidanceTextEl.innerHTML = shouldShow
+    ? "请把下面片段补充到知识库根目录的 <code>AGENTS.md</code>。更新后需要在新会话中生效，已有会话不会自动获得这项能力。"
+    : "";
+  capabilityAgentsGuidanceSnippetEl.value = shouldShow ? capabilityAgentsGuidanceState.snippet : "";
+  if (copyCapabilityAgentsSnippetButtonEl) {
+    copyCapabilityAgentsSnippetButtonEl.disabled = !shouldShow;
+  }
+  if (openCapabilityAgentsButtonEl) {
+    openCapabilityAgentsButtonEl.disabled = !shouldShow || !capabilityByPath("AGENTS.md");
+  }
+}
+
+function ensureCapabilitySwitchAllowed() {
+  if (!capabilityHasUnsavedChanges()) {
+    return true;
+  }
+  return window.confirm("当前能力定义有未保存修改，确认放弃这些修改并切换吗？");
+}
+
+function renderCapabilitySummary() {
+  if (!capabilitySummaryChipsEl) {
+    return;
+  }
+  capabilitySummaryChipsEl.innerHTML = "";
+  const items = capabilityItems();
+  const skills = items.filter((item) => item.source === "skill").length;
+  const schemas = items.filter((item) => item.source === "schema").length;
+  const supportDocs = items.filter((item) => String(item.source || "").includes("doc")).length;
+  [
+    `总数：${items.length}`,
+    `Skills：${skills}`,
+    `Schemas：${schemas}`,
+    `支持文件：${supportDocs}`,
+  ].forEach((label) => {
+    const chip = document.createElement("span");
+    chip.className = "settings-chip";
+    chip.textContent = label;
+    capabilitySummaryChipsEl.appendChild(chip);
+  });
+}
+
+function renderCapabilityEditor() {
+  const item = capabilityByPath(capabilityState.selectedPath);
+  if (capabilityEditorTitleEl) {
+    capabilityEditorTitleEl.textContent = item?.name || "选择一个 skill 或 schema";
+  }
+  if (capabilityEditorPathEl) {
+    capabilityEditorPathEl.textContent = item
+      ? `${item.group || (item.source === "schema" ? "Schemas" : "Skills")} · ${item.path}`
+      : "将在这里显示当前能力定义的路径与类型。";
+  }
+  if (capabilityEditorInputEl) {
+    if (!item) {
+      capabilityEditorInputEl.value = "";
+    } else if (!capabilityHasUnsavedChanges()) {
+      capabilityEditorInputEl.value = capabilityState.savedContent;
+    }
+    capabilityEditorInputEl.disabled = !item || capabilityState.fileLoading || capabilityState.saving;
+    capabilityEditorInputEl.placeholder = item
+      ? "在这里编辑原始定义，保存后会直接写回当前知识库。"
+      : "选择左侧条目后即可查看和编辑原始定义。";
+  }
+  if (resetCapabilityButtonEl) {
+    resetCapabilityButtonEl.disabled = !item || capabilityState.fileLoading || capabilityState.saving || !capabilityHasUnsavedChanges();
+  }
+  if (deleteCapabilityButtonEl) {
+    deleteCapabilityButtonEl.disabled =
+      !item || capabilityState.fileLoading || capabilityState.saving || item.deletable === false;
+  }
+  if (saveCapabilityButtonEl) {
+    saveCapabilityButtonEl.disabled = !item || capabilityState.fileLoading || capabilityState.saving || !capabilityHasUnsavedChanges();
+  }
+  renderCapabilityAgentsGuidance();
+}
+
+function renderCapabilityList() {
+  if (!capabilityListEl || !capabilityEmptyEl) {
+    return;
+  }
+  const items = capabilityItems();
+  capabilityListEl.innerHTML = "";
+  capabilityEmptyEl.classList.toggle("hidden", items.length > 0);
+
+  const groups = groupedCapabilityItems();
+
+  groups.forEach(([label, groupItems]) => {
+    if (!groupItems.length) {
+      return;
+    }
+    const section = document.createElement("section");
+    section.className = "settings-capability-group";
+
+    const title = document.createElement("p");
+    title.className = "settings-capability-group-title";
+    title.textContent = label;
+    section.appendChild(title);
+
+    groupItems.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "settings-capability-item";
+      button.classList.toggle("active", item.path === capabilityState.selectedPath);
+
+      const name = document.createElement("p");
+      name.className = "settings-capability-item-name";
+      name.textContent = item.name || item.command || item.path;
+
+      const meta = document.createElement("div");
+      meta.className = "settings-capability-item-meta";
+
+      const source = document.createElement("span");
+      const sourceKind = item.source === "schema" || item.source === "schema-doc"
+        ? "schema"
+        : item.source === "skill" || item.source === "skill-doc"
+          ? "skill"
+          : "";
+      source.className = `settings-capability-badge${sourceKind ? ` ${sourceKind}` : ""}`;
+      source.textContent = (() => {
+        switch (item.source) {
+          case "schema":
+            return "Schema";
+          case "schema-doc":
+            return "Schema Doc";
+          case "skill-doc":
+            return "Skill Doc";
+          case "knowledge-base-doc":
+            return "KB Doc";
+          default:
+            return "Skill";
+        }
+      })();
+      meta.appendChild(source);
+
+      if (item.command) {
+        const command = document.createElement("span");
+        command.className = "settings-capability-badge";
+        command.textContent = `/${item.command}`;
+        meta.appendChild(command);
+      }
+
+      const path = document.createElement("p");
+      path.className = "settings-capability-item-path";
+      path.textContent = item.path || "";
+
+      button.appendChild(name);
+      button.appendChild(meta);
+      button.appendChild(path);
+      button.addEventListener("click", () => {
+        if (item.path === capabilityState.selectedPath) {
+          return;
+        }
+        if (!ensureCapabilitySwitchAllowed()) {
+          return;
+        }
+        void loadCapabilityFile(item.path, { preserveUnsaved: true });
+      });
+      section.appendChild(button);
+    });
+
+    capabilityListEl.appendChild(section);
+  });
+}
+
+function renderCapabilitySettings() {
+  renderCapabilitySummary();
+  renderCapabilityList();
+  renderCapabilityEditor();
+  if (refreshCapabilityListButtonEl) {
+    refreshCapabilityListButtonEl.disabled = capabilityState.loading || capabilityState.fileLoading || capabilityState.saving;
+  }
+  if (createSkillButtonEl) {
+    createSkillButtonEl.disabled = capabilityState.loading || capabilityState.fileLoading || capabilityState.saving;
+  }
+  if (createSchemaButtonEl) {
+    createSchemaButtonEl.disabled = capabilityState.loading || capabilityState.fileLoading || capabilityState.saving;
+  }
+  if (capabilityCreateNameInputEl) {
+    capabilityCreateNameInputEl.disabled = capabilityState.loading || capabilityState.fileLoading || capabilityState.saving;
+  }
+}
+
+async function refreshSlashCommandsAfterCapabilityChange() {
+  try {
+    await window.ChatWorkbench?.reloadSlashCommands?.();
+  } catch (error) {
+    console.error("Failed to refresh slash commands after capability change:", error);
+  }
+}
+
+async function loadCapabilityFile(path, { preserveUnsaved = false } = {}) {
+  const nextPath = String(path || "").trim();
+  if (!nextPath) {
+    capabilityState.selectedPath = "";
+    capabilityState.savedContent = "";
+    hideCapabilityAgentsGuidance();
+    renderCapabilitySettings();
+    return;
+  }
+  if (!preserveUnsaved && !ensureCapabilitySwitchAllowed()) {
+    return;
+  }
+  capabilityState.fileLoading = true;
+  capabilityState.selectedPath = nextPath;
+  renderCapabilitySettings();
+  setCapabilityFeedback("正在加载能力定义...");
+  try {
+    const url = `/api/knowledge-base/capability-file?path=${encodeURIComponent(nextPath)}`;
+    const response = await fetch(url);
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    capabilityState.savedContent = String(payload.content || "");
+    if (capabilityEditorInputEl) {
+      capabilityEditorInputEl.value = capabilityState.savedContent;
+    }
+    const selectedItem = capabilityByPath(nextPath);
+    if (!selectedItem || !["skill", "schema"].includes(String(selectedItem.source || ""))) {
+      hideCapabilityAgentsGuidance();
+    }
+    setCapabilityFeedback("");
+  } catch (error) {
+    capabilityState.savedContent = "";
+    if (capabilityEditorInputEl) {
+      capabilityEditorInputEl.value = "";
+    }
+    hideCapabilityAgentsGuidance();
+    setCapabilityFeedback(`加载失败：${error.message}`, true);
+  } finally {
+    capabilityState.fileLoading = false;
+    renderCapabilitySettings();
+  }
+}
+
+async function loadCapabilities(force = false) {
+  if (capabilityState.loading) {
+    return;
+  }
+  if (!force && capabilityState.loaded) {
+    renderCapabilitySettings();
+    return;
+  }
+  capabilityState.loading = true;
+  renderCapabilitySettings();
+  setCapabilityFeedback("正在读取当前知识库的 skills 与 schemas...");
+  try {
+    const response = await fetch("/api/knowledge-base/capabilities");
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    capabilityState.items = Array.isArray(payload?.items) ? payload.items : [];
+    capabilityState.loaded = true;
+    const hasSelected = capabilityByPath(capabilityState.selectedPath);
+    const nextSelection = hasSelected?.path || capabilityItems()[0]?.path || "";
+    setCapabilityFeedback("");
+    renderCapabilitySettings();
+    if (nextSelection) {
+      await loadCapabilityFile(nextSelection, { preserveUnsaved: true });
+    } else {
+      capabilityState.selectedPath = "";
+      capabilityState.savedContent = "";
+      if (capabilityEditorInputEl) {
+        capabilityEditorInputEl.value = "";
+      }
+      renderCapabilitySettings();
+    }
+  } catch (error) {
+    setCapabilityFeedback(`加载失败：${error.message}`, true);
+  } finally {
+    capabilityState.loading = false;
+    renderCapabilitySettings();
+  }
+}
+
+function resetCapabilityEditor() {
+  if (!capabilityEditorInputEl) {
+    return;
+  }
+  capabilityEditorInputEl.value = capabilityState.savedContent;
+  setCapabilityFeedback("");
+  renderCapabilitySettings();
+}
+
+async function saveCapabilityFile() {
+  const item = capabilityByPath(capabilityState.selectedPath);
+  if (!item || !capabilityEditorInputEl) {
+    return;
+  }
+  capabilityState.saving = true;
+  renderCapabilitySettings();
+  setCapabilityFeedback("正在保存能力定义...");
+  try {
+    const response = await fetch("/api/knowledge-base/capability-file", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        path: item.path,
+        content: capabilityEditorInputEl.value,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    capabilityState.savedContent = String(payload.content || capabilityEditorInputEl.value || "");
+    capabilityState.loaded = false;
+    setCapabilityFeedback("");
+    showSettingsToast(payload?.detail || "能力定义已保存。");
+    if (["skill", "schema"].includes(String(item.source || ""))) {
+      showCapabilityAgentsGuidance(item);
+    } else {
+      hideCapabilityAgentsGuidance();
+    }
+    await loadCapabilities(true);
+    await refreshSlashCommandsAfterCapabilityChange();
+  } catch (error) {
+    setCapabilityFeedback(`保存失败：${error.message}`, true);
+  } finally {
+    capabilityState.saving = false;
+    renderCapabilitySettings();
+  }
+}
+
+async function deleteCapability() {
+  const item = capabilityByPath(capabilityState.selectedPath);
+  if (!item) {
+    return;
+  }
+  const label = (() => {
+    switch (item.source) {
+      case "schema":
+        return "Schema";
+      case "schema-doc":
+        return "Schema 文档";
+      case "skill-doc":
+        return "Skill 文档";
+      case "knowledge-base-doc":
+        return "知识库文档";
+      default:
+        return "Skill";
+    }
+  })();
+  const targetName = item.name || item.command || item.path;
+  if (!window.confirm(`确认删除 ${label} “${targetName}” 吗？`)) {
+    return;
+  }
+  capabilityState.saving = true;
+  renderCapabilitySettings();
+  setCapabilityFeedback(`正在删除 ${label}...`);
+  try {
+    const response = await fetch(`/api/knowledge-base/capability-file?path=${encodeURIComponent(item.path)}`, {
+      method: "DELETE",
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    capabilityState.loaded = false;
+    capabilityState.selectedPath = "";
+    capabilityState.savedContent = "";
+    if (capabilityEditorInputEl) {
+      capabilityEditorInputEl.value = "";
+    }
+    hideCapabilityAgentsGuidance();
+    setCapabilityFeedback("");
+    showSettingsToast(payload?.detail || "能力定义已删除。");
+    await loadCapabilities(true);
+    await refreshSlashCommandsAfterCapabilityChange();
+  } catch (error) {
+    setCapabilityFeedback(`删除失败：${error.message}`, true);
+  } finally {
+    capabilityState.saving = false;
+    renderCapabilitySettings();
+  }
+}
+
+async function createCapability(source) {
+  const sourceLabel = source === "schema" ? "Schema" : "Skill";
+  const nextName = String(capabilityCreateNameInputEl?.value || "").trim();
+  if (!nextName) {
+    setCapabilityFeedback(`请先输入 ${sourceLabel} 名称。`, true);
+    capabilityCreateNameInputEl?.focus();
+    return;
+  }
+  if (!ensureCapabilitySwitchAllowed()) {
+    return;
+  }
+  capabilityState.saving = true;
+  renderCapabilitySettings();
+  setCapabilityFeedback(`正在创建 ${sourceLabel}...`);
+  try {
+    const response = await fetch("/api/knowledge-base/capability-file", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        source,
+        name: nextName,
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    capabilityState.loaded = false;
+    setCapabilityFeedback("");
+    showSettingsToast(payload?.detail || `${sourceLabel} 已创建。`);
+    if (capabilityCreateNameInputEl) {
+      capabilityCreateNameInputEl.value = "";
+    }
+    await loadCapabilities(true);
+    await refreshSlashCommandsAfterCapabilityChange();
+    if (payload?.path) {
+      await loadCapabilityFile(String(payload.path), { preserveUnsaved: true });
+      const createdItem = capabilityByPath(String(payload.path));
+      if (createdItem) {
+        showCapabilityAgentsGuidance(createdItem);
+      }
+    }
+  } catch (error) {
+    setCapabilityFeedback(`创建失败：${error.message}`, true);
+  } finally {
+    capabilityState.saving = false;
+    renderCapabilitySettings();
+  }
 }
 
 function renderDiagnosticsList(element, items) {
@@ -389,7 +970,9 @@ async function loadDiagnostics(force = false) {
 
 function setActiveSettingsSection(section) {
   const nextSection =
-    section === "model-providers" || section === "diagnostics" ? section : "knowledge-base";
+    section === "current-skills" || section === "model-providers" || section === "diagnostics"
+      ? section
+      : "knowledge-base";
   if (nextSection !== activeSettingsSection) {
     clearSettingsFeedback();
   }
@@ -403,6 +986,9 @@ function setActiveSettingsSection(section) {
   settingsSectionPaneEls.forEach((pane) => {
     pane.classList.toggle("active", pane.dataset.settingsSectionPane === activeSettingsSection);
   });
+  if (activeSettingsSection === "current-skills") {
+    void loadCapabilities();
+  }
   if (activeSettingsSection === "diagnostics") {
     void loadDiagnostics();
   }
@@ -1027,6 +1613,7 @@ function renderModelProviderSettings() {
 
 function renderSettings() {
   renderKnowledgeBaseSettings();
+  renderCapabilitySettings();
   renderModelProviderSettings();
 }
 
@@ -1298,6 +1885,50 @@ providerDesktopLoginButtonEl?.addEventListener("click", async () => {
 resetProviderButtonEl?.addEventListener("click", () => resetProviderForm(providerFormMode));
 refreshDiagnosticsButtonEl?.addEventListener("click", async () => {
   await loadDiagnostics(true);
+});
+refreshCapabilityListButtonEl?.addEventListener("click", async () => {
+  await loadCapabilities(true);
+});
+createSkillButtonEl?.addEventListener("click", async () => {
+  await createCapability("skill");
+});
+createSchemaButtonEl?.addEventListener("click", async () => {
+  await createCapability("schema");
+});
+capabilityCreateNameInputEl?.addEventListener("keydown", async (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    await createCapability("skill");
+  }
+});
+deleteCapabilityButtonEl?.addEventListener("click", async () => {
+  await deleteCapability();
+});
+resetCapabilityButtonEl?.addEventListener("click", resetCapabilityEditor);
+saveCapabilityButtonEl?.addEventListener("click", async () => {
+  await saveCapabilityFile();
+});
+capabilityEditorInputEl?.addEventListener("input", () => {
+  renderCapabilitySettings();
+});
+copyCapabilityAgentsSnippetButtonEl?.addEventListener("click", async () => {
+  const copied = await copyTextToClipboard(capabilityAgentsGuidanceState.snippet);
+  if (copied) {
+    showSettingsToast("已复制 AGENTS 片段。");
+  } else {
+    setCapabilityFeedback("复制失败，请手动复制上面的片段。", true);
+  }
+});
+openCapabilityAgentsButtonEl?.addEventListener("click", async () => {
+  setActiveSettingsSection("current-skills");
+  if (!capabilityByPath("AGENTS.md")) {
+    setCapabilityFeedback("当前知识库根目录下未找到 AGENTS.md。", true);
+    return;
+  }
+  if (!ensureCapabilitySwitchAllowed()) {
+    return;
+  }
+  await loadCapabilityFile("AGENTS.md");
 });
 
 knowledgeBasePathInputEl?.addEventListener("keydown", (event) => {

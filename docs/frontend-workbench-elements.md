@@ -75,6 +75,7 @@
 - DOM：`[data-settings-section]`
 - 当前分组：
   - `knowledge-base`
+  - `current-skills`
   - `model-providers`
   - `diagnostics`
 - 实现：`workbench.js -> setActiveSettingsSection()`
@@ -108,7 +109,41 @@
 - 当前桥接实现由 `app/frontend/assets/desktop-bridge.js` 提供
 - Tauri 版会通过 `invoke("select_knowledge_base_directory")` 拉起原生目录选择器，再复用已有知识库切换 API
 
-### 4.3 Model Provider 设置区
+### 4.3 当前技能区
+
+主要元素：
+
+- `#capability-summary-chips`
+- `#capability-list`
+- `#create-skill-button`
+- `#create-schema-button`
+- `#refresh-capability-list`
+- `#delete-capability-button`
+- `#capability-editor-input`
+- `#save-capability-button`
+- `#reset-capability-button`
+
+功能：
+
+- 展示当前知识库识别到的 `skills` 与 `schemas`
+- 按 `Skills / Schemas` 分组展示
+- 支持直接新建一个最小模板的 `skill` 或 `schema`
+- 同时展示并允许编辑这些能力相关的支持文件，例如 `skills/*/README.md`、`skills/*/AGENTS.md`、`schemas/**/README.md`、`schemas/**/AGENTS.md`
+- 额外展示并允许编辑知识库根目录的 `AGENTS.md`
+- 展示它们在 slash 自动补全里对应的命令名、类型和路径
+- 允许直接编辑原始定义文本并写回知识库
+- 支持删除当前选中的 `skill` 或 `schema`
+- 保持和 Chat 输入框 slash 列表共用同一套能力目录
+
+数据来源：
+
+- `GET /api/knowledge-base/capabilities`
+- `GET /api/knowledge-base/capability-file`
+- `POST /api/knowledge-base/capability-file`
+- `PATCH /api/knowledge-base/capability-file`
+- `DELETE /api/knowledge-base/capability-file`
+
+### 4.4 Model Provider 设置区
 
 主要元素：
 
@@ -141,7 +176,7 @@
 - `DELETE /api/settings/model-providers/{provider_key}`
 - `POST /api/settings/pi-login`
 
-### 4.4 Diagnostics 区
+### 4.5 Diagnostics 区
 
 主要元素：
 
@@ -284,6 +319,8 @@
   - `Enter` 发送
   - `Shift+Enter` 换行
   - 当前回复进行中也允许继续编辑草稿
+  - 输入 `/` 时会拉起当前知识库 `skills + schemas` 的 slash 自动补全
+  - 选中某个 slash 命令后，默认插入输入框草稿，不直接发送
 
 ### 6.7 发送 / 终止按钮
 
@@ -302,7 +339,9 @@
 - `#toggle-inbox-panel`
 - `#chat-model-button`
 - `#chat-thinking-button`
+- `#chat-slash-button`
 - `#chat-settings-hint`
+- `#chat-slash-panel`
 
 功能：
 
@@ -310,7 +349,14 @@
 - 打开 `Inbox` 面板
 - 切换当前模型
 - 切换当前思考水平
+- 打开当前知识库 `skills + schemas` 的 slash 命令面板
 - 当当前模型不支持某个思考水平时，显示轻量提示
+
+slash 面板当前会：
+
+- 按 `Skills / Schemas` 分组
+- 对每一项显示类型徽标
+- 选择后把命令插入草稿，不直接执行
 
 在 `wiki` 布局的 chat 浮窗中：
 
@@ -332,7 +378,6 @@
 
 - 常驻显示当前知识库 `inbox/` 文件状态
 - 上传成功后自动打开并高亮新文件
-- 支持拖拽上传到 Inbox 按钮或面板
 - 支持删除文件
 - `ingest` 按钮会把“请 ingest 一下 inbox 的内容。”插入输入框
 

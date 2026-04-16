@@ -42,6 +42,7 @@ from .raw_service import (
     list_raw_files,
     search_raw_files,
 )
+from .skill_service import create_capability_file, delete_capability_file, get_capability_file, list_capability_entries, list_slash_commands, save_capability_file
 from .wiki_service import get_page, get_tree, list_pages, save_page, search_pages
 from .session_manager import (
     get_session_pool,
@@ -332,6 +333,17 @@ class UpsertModelProviderRequest(BaseModel):
     account_id: str = Field(default="", description="OAuth accountId（可选）")
     email: str = Field(default="", description="OAuth email（可选）")
     project_id: str = Field(default="", description="OAuth projectId（可选）")
+
+
+class CapabilityFileUpdateRequest(BaseModel):
+    path: str = Field(..., min_length=1, description="skills/ 或 schemas/ 下的相对路径")
+    content: str = Field(default="", description="新的文件内容")
+
+
+class CreateCapabilityFileRequest(BaseModel):
+    source: str = Field(..., min_length=1, description="skill 或 schema")
+    name: str = Field(..., min_length=1, description="显示名称")
+    description: str = Field(default="", description="可选描述")
 
 
 @asynccontextmanager
@@ -861,6 +873,77 @@ def update_wiki_page(
 def raw_files() -> dict[str, object]:
     items = list_raw_files()
     return {"items": items, "count": len(items)}
+
+
+@app.get("/api/knowledge-base/skills")
+def knowledge_base_skills() -> dict[str, object]:
+    items = list_slash_commands()
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/knowledge-base/slash-commands")
+def knowledge_base_slash_commands() -> dict[str, object]:
+    items = list_slash_commands()
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/knowledge-base/capabilities")
+def knowledge_base_capabilities() -> dict[str, object]:
+    items = list_capability_entries()
+    return {"items": items, "count": len(items)}
+
+
+@app.get("/api/knowledge-base/capability-file")
+def knowledge_base_capability_file(path: str = Query(..., description="Relative file path inside skills/ or schemas/")) -> dict[str, object]:
+    try:
+        return get_capability_file(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Capability file not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.patch("/api/knowledge-base/capability-file")
+def update_knowledge_base_capability_file(payload: CapabilityFileUpdateRequest) -> dict[str, object]:
+    try:
+        result = save_capability_file(payload.path, payload.content)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Capability file not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "detail": "能力定义已保存。",
+        **result,
+    }
+
+
+@app.post("/api/knowledge-base/capability-file")
+def create_knowledge_base_capability_file(payload: CreateCapabilityFileRequest) -> dict[str, object]:
+    try:
+        result = create_capability_file(payload.source, payload.name, payload.description)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "detail": "能力定义已创建。",
+        **result,
+    }
+
+
+@app.delete("/api/knowledge-base/capability-file")
+def delete_knowledge_base_capability_file(path: str = Query(..., description="Relative file path inside skills/ or schemas/")) -> dict[str, object]:
+    try:
+        result = delete_capability_file(path)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=f"Capability file not found: {exc}") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {
+        "success": True,
+        "detail": "能力定义已删除。",
+        **result,
+    }
 
 
 @app.get("/api/raw/file")
