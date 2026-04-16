@@ -290,7 +290,144 @@ def _parse_model_flag(value: str, *, truthy: str, falsy: str) -> bool | None:
     return None
 
 
+def _normalize_model_config_item(raw_item: Any) -> dict[str, Any] | None:
+    if not isinstance(raw_item, dict):
+        return None
+
+    model_id = _trimmed(raw_item.get("id"))
+    if not model_id:
+        return None
+
+    item: dict[str, Any] = {"id": model_id}
+
+    name = _trimmed(raw_item.get("name"))
+    if name:
+        item["name"] = name
+
+    if "reasoning" in raw_item:
+        item["reasoning"] = bool(raw_item.get("reasoning"))
+
+    raw_input = raw_item.get("input")
+    if isinstance(raw_input, list):
+        normalized_inputs = [
+            _trimmed(value).lower()
+            for value in raw_input
+            if _trimmed(value).lower() in {"text", "image", "audio", "file"}
+        ]
+        if normalized_inputs:
+            item["input"] = normalized_inputs
+
+    for key in ("cost", "compat"):
+        value = raw_item.get(key)
+        if isinstance(value, dict) and value:
+            item[key] = value
+
+    for key in ("contextWindow", "maxTokens"):
+        value = raw_item.get(key)
+        if isinstance(value, int) and value > 0:
+            item[key] = value
+
+    for key, value in raw_item.items():
+        if key in item or key in {"id", "name", "reasoning", "input", "cost", "compat", "contextWindow", "maxTokens"}:
+            continue
+        if isinstance(value, (str, bool, int, float)):
+            item[key] = value
+        elif isinstance(value, dict) and value:
+            item[key] = value
+        elif isinstance(value, list) and value:
+            item[key] = value
+
+    return item
+
+
+def _extract_models_array_from_json(parsed: Any) -> list[Any] | None:
+    if isinstance(parsed, list):
+        return parsed
+
+    if not isinstance(parsed, dict):
+        return None
+
+    raw_models = parsed.get("models")
+    if isinstance(raw_models, list):
+        return raw_models
+
+    if isinstance(raw_models, dict):
+        nested_models = raw_models.get("models")
+        if isinstance(nested_models, list):
+            return nested_models
+
+        providers = raw_models.get("providers")
+        if isinstance(providers, dict):
+            for provider_config in providers.values():
+                if not isinstance(provider_config, dict):
+                    continue
+                provider_models = provider_config.get("models")
+                if isinstance(provider_models, list):
+                    return provider_models
+
+    providers = parsed.get("providers")
+    if isinstance(providers, dict):
+        for provider_config in providers.values():
+            if not isinstance(provider_config, dict):
+                continue
+            provider_models = provider_config.get("models")
+            if isinstance(provider_models, list):
+                return provider_models
+
+    return None
+
+
+def _normalize_models_json_text(raw_value: Any) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    if text.startswith("{") or text.startswith("["):
+        return text
+    if re.match(r'^"(?:[^"\\]|\\.)+"\s*:', text):
+        return "{" + text + "}"
+    return text
+
+
+def _parse_models_json(raw_value: Any) -> list[dict[str, Any]] | None:
+    text = _normalize_models_json_text(raw_value)
+    if not text:
+        return []
+    if not text.startswith("{") and not text.startswith("["):
+        return None
+
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"模型 JSON 解析失败：{exc.msg}") from exc
+
+    raw_models = _extract_models_array_from_json(parsed)
+    if raw_models is None:
+        raise ValueError(
+            "模型配置必须是 JSON 对象，且包含 `models` 数组；也支持包含 `models.providers.<provider>.models` 的完整厂商配置。"
+        )
+
+    if not isinstance(raw_models, list):
+        raise ValueError("模型配置中的 `models` 必须是数组。")
+
+    models: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for raw_item in raw_models:
+        item = _normalize_model_config_item(raw_item)
+        if not item:
+            continue
+        model_id = item["id"]
+        if model_id in seen:
+            continue
+        seen.add(model_id)
+        models.append(item)
+    return models
+
+
 def _parse_models_text(raw_value: Any) -> list[dict[str, Any]]:
+    parsed_json_models = _parse_models_json(raw_value)
+    if parsed_json_models is not None:
+        return parsed_json_models
+
     models: list[dict[str, Any]] = []
     seen: set[str] = set()
     for raw_line in str(raw_value or "").splitlines():
@@ -320,25 +457,14 @@ def _parse_models_text(raw_value: Any) -> list[dict[str, Any]]:
 def _serialize_models_text(models: Any) -> str:
     if not isinstance(models, list):
         return ""
-    lines: list[str] = []
+    normalized = []
     for item in models:
-        if not isinstance(item, dict):
-            continue
-        model_id = _trimmed(item.get("id"))
-        if not model_id:
-            continue
-        parts = [model_id]
-        name = _trimmed(item.get("name"))
-        if name or "reasoning" in item or "input" in item:
-            parts.append(name)
-        if "reasoning" in item or "input" in item:
-            parts.append("reasoning" if bool(item.get("reasoning")) else "plain")
-        if "input" in item:
-            inputs = item.get("input")
-            has_image = isinstance(inputs, list) and any(_trimmed(value).lower() == "image" for value in inputs)
-            parts.append("image" if has_image else "text")
-        lines.append(" | ".join(parts))
-    return "\n".join(lines)
+        parsed = _normalize_model_config_item(item)
+        if parsed:
+            normalized.append(parsed)
+    if not normalized:
+        return ""
+    return json.dumps({"models": normalized}, ensure_ascii=False, indent=2)
 
 
 def _timestamp_ms() -> int:
@@ -655,7 +781,7 @@ def upsert_model_provider_profile(payload: dict[str, Any]) -> dict[str, Any]:
         if not record["base_url"]:
             raise ValueError("API Provider 需要填写 base_url。")
         if not _parse_models_text(record["models_text"]):
-            raise ValueError("API Provider 至少需要配置一个模型。")
+            raise ValueError("API Provider 至少需要在模型配置 JSON 中提供一个模型。")
         record["auth_header"] = bool(payload.get("auth_header"))
         api_key = _trimmed(payload.get("api_key"))
         clear_secret = bool(payload.get("clear_secret"))

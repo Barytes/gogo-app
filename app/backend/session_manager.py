@@ -794,10 +794,17 @@ class SessionPool:
             return trace_item
         if event_type == "tool_execution_end" and bool(event.get("isError")):
             tool_name = str(event.get("toolName") or "unknown")
+            detail = self._short_trace_text(
+                event.get("error")
+                or event.get("errorMessage")
+                or event.get("result")
+                or "Pi RPC reported a tool execution error.",
+                max_length=220,
+            )
             return {
                 "kind": "status",
                 "title": f"工具出错：{tool_name}",
-                "detail": "Pi RPC reported a tool execution error.",
+                "detail": detail,
                 "action": "status",
                 "event_type": event_type,
             }
@@ -810,6 +817,84 @@ class SessionPool:
                 "event_type": event_type,
             }
         return None
+
+    def _stringify_rpc_error_detail(self, value: Any, *, max_length: int = 220) -> str:
+        if isinstance(value, str):
+            return self._short_trace_text(value, max_length=max_length)
+        if isinstance(value, (int, float, bool)):
+            return str(value)
+        if isinstance(value, dict):
+            for key in ("message", "errorMessage", "finalError", "reason", "type"):
+                nested = self._stringify_rpc_error_detail(value.get(key), max_length=max_length)
+                if nested:
+                    return nested
+            return self._short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
+        if isinstance(value, list) and value:
+            return self._short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
+        return ""
+
+    def _extract_rpc_error_detail_from_message(self, message: Any) -> str:
+        if not isinstance(message, dict):
+            return ""
+        for key in ("errorMessage", "finalError", "error", "reason"):
+            detail = self._stringify_rpc_error_detail(message.get(key))
+            if detail:
+                return detail
+        content = message.get("content")
+        if isinstance(content, list):
+            for item in reversed(content):
+                if not isinstance(item, dict):
+                    continue
+                for key in ("errorMessage", "error", "message", "reason"):
+                    detail = self._stringify_rpc_error_detail(item.get(key))
+                    if detail:
+                        return detail
+        return ""
+
+    def _extract_rpc_error_detail_from_event(self, event: dict[str, Any]) -> str:
+        if not isinstance(event, dict):
+            return ""
+
+        event_type = str(event.get("type") or "")
+        if event_type == "message_update":
+            assistant_event = event.get("assistantMessageEvent")
+            if isinstance(assistant_event, dict):
+                for key in ("error", "errorMessage", "reason"):
+                    detail = self._stringify_rpc_error_detail(assistant_event.get(key))
+                    if detail:
+                        return detail
+                partial = assistant_event.get("partial")
+                if isinstance(partial, dict):
+                    detail = self._extract_rpc_error_detail_from_message(partial)
+                    if detail:
+                        return detail
+
+        for key in ("finalError", "errorMessage", "error"):
+            detail = self._stringify_rpc_error_detail(event.get(key))
+            if detail:
+                return detail
+
+        if event_type == "agent_end":
+            messages = event.get("messages")
+            if isinstance(messages, list):
+                for message in reversed(messages):
+                    detail = self._extract_rpc_error_detail_from_message(message)
+                    if detail:
+                        return detail
+
+        if event_type in {"message_end", "turn_end"}:
+            detail = self._extract_rpc_error_detail_from_message(event.get("message"))
+            if detail:
+                return detail
+
+        return ""
+
+    def _no_visible_text_message(self, raw_error_detail: str) -> str:
+        base = "Pi RPC 未返回可见文本。"
+        detail = self._short_trace_text(raw_error_detail, max_length=220).strip()
+        if not detail:
+            return base
+        return f"{base} Pi 原始报错：{detail}"
 
     def _user_aborted_terminal_event(
         self,
@@ -894,6 +979,7 @@ class SessionPool:
         trace: list[dict[str, Any]] = []
         streamed_text_chunks: list[str] = []
         latest_assistant_text = ""
+        latest_error_detail = ""
         client: PiRpcClient | None = None
         pending_thinking_chunks: list[str] = []
 
@@ -958,6 +1044,9 @@ class SessionPool:
                     request_id=request_id,
                 ):
                     event_type = str(rpc_event.get("type") or "")
+                    event_error_detail = self._extract_rpc_error_detail_from_event(rpc_event)
+                    if event_error_detail:
+                        latest_error_detail = event_error_detail
                     if event_type == "message_update":
                         assistant_event = rpc_event.get("assistantMessageEvent")
                         snapshot_text = self._extract_assistant_text_from_message(
@@ -1040,7 +1129,7 @@ class SessionPool:
                             final_text = "".join(streamed_text_chunks).strip()
                         terminal_event = {
                             "type": "final",
-                            "message": final_text or "Pi RPC 未返回可见文本。",
+                            "message": final_text or self._no_visible_text_message(latest_error_detail),
                             "warnings": [],
                             "trace": trace,
                             "history_length": session.info.message_count + 1,

@@ -317,10 +317,17 @@ def _rpc_trace_item_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
         return trace_item
     if event_type == "tool_execution_end" and bool(event.get("isError")):
         tool_name = str(event.get("toolName") or "unknown")
+        detail = _short_trace_text(
+            event.get("error")
+            or event.get("errorMessage")
+            or event.get("result")
+            or "Pi RPC reported a tool execution error.",
+            max_length=220,
+        )
         return {
             "kind": "status",
             "title": f"工具出错：{tool_name}",
-            "detail": "Pi RPC reported a tool execution error.",
+            "detail": detail,
             "action": "status",
             "event_type": event_type,
         }
@@ -333,6 +340,88 @@ def _rpc_trace_item_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
             "event_type": event_type,
         }
     return None
+
+
+def _stringify_rpc_error_detail(value: Any, *, max_length: int = 220) -> str:
+    if isinstance(value, str):
+        return _short_trace_text(value, max_length=max_length)
+    if isinstance(value, (int, float, bool)):
+        return str(value)
+    if isinstance(value, dict):
+        for key in ("message", "errorMessage", "finalError", "reason", "type"):
+            nested = _stringify_rpc_error_detail(value.get(key), max_length=max_length)
+            if nested:
+                return nested
+        return _short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
+    if isinstance(value, list) and value:
+        return _short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
+    return ""
+
+
+def _extract_rpc_error_detail_from_message(message: Any) -> str:
+    if not isinstance(message, dict):
+        return ""
+    for key in ("errorMessage", "finalError", "error", "reason"):
+        detail = _stringify_rpc_error_detail(message.get(key))
+        if detail:
+            return detail
+    content = message.get("content")
+    if isinstance(content, list):
+        for item in reversed(content):
+            if not isinstance(item, dict):
+                continue
+            for key in ("errorMessage", "error", "message", "reason"):
+                detail = _stringify_rpc_error_detail(item.get(key))
+                if detail:
+                    return detail
+    return ""
+
+
+def _extract_rpc_error_detail_from_event(event: dict[str, Any]) -> str:
+    if not isinstance(event, dict):
+        return ""
+
+    event_type = str(event.get("type") or "")
+    if event_type == "message_update":
+        assistant_event = event.get("assistantMessageEvent")
+        if isinstance(assistant_event, dict):
+            for key in ("error", "errorMessage", "reason"):
+                detail = _stringify_rpc_error_detail(assistant_event.get(key))
+                if detail:
+                    return detail
+            partial = assistant_event.get("partial")
+            if isinstance(partial, dict):
+                detail = _extract_rpc_error_detail_from_message(partial)
+                if detail:
+                    return detail
+
+    for key in ("finalError", "errorMessage", "error"):
+        detail = _stringify_rpc_error_detail(event.get(key))
+        if detail:
+            return detail
+
+    if event_type == "agent_end":
+        messages = event.get("messages")
+        if isinstance(messages, list):
+            for message in reversed(messages):
+                detail = _extract_rpc_error_detail_from_message(message)
+                if detail:
+                    return detail
+
+    if event_type in {"message_end", "turn_end"}:
+        detail = _extract_rpc_error_detail_from_message(event.get("message"))
+        if detail:
+            return detail
+
+    return ""
+
+
+def _no_visible_text_message(raw_error_detail: str) -> str:
+    base = "Pi RPC 未返回可见文本。"
+    detail = _short_trace_text(raw_error_detail, max_length=220).strip()
+    if not detail:
+        return base
+    return f"{base} Pi 原始报错：{detail}"
 
 
 async def _run_pi_rpc_agent_chat_async(
@@ -349,6 +438,7 @@ async def _run_pi_rpc_agent_chat_async(
     trace: list[dict[str, Any]] = []
     streamed_text_chunks: list[str] = []
     latest_assistant_text = ""
+    latest_error_detail = ""
     client: PiRpcClient | None = None
 
     try:
@@ -368,6 +458,9 @@ async def _run_pi_rpc_agent_chat_async(
                 request_id=request_id,
             ):
                 event_type = str(event.get("type") or "")
+                event_error_detail = _extract_rpc_error_detail_from_event(event)
+                if event_error_detail:
+                    latest_error_detail = event_error_detail
                 if event_type == "message_update":
                     assistant_event = event.get("assistantMessageEvent")
                     snapshot_text = _extract_assistant_text_from_message(event.get("message"))
@@ -410,7 +503,7 @@ async def _run_pi_rpc_agent_chat_async(
                     if not final_text:
                         final_text = "".join(streamed_text_chunks).strip()
                     if not final_text:
-                        final_text = "Pi RPC 未返回可见文本。"
+                        final_text = _no_visible_text_message(latest_error_detail)
                     return {
                         "mode": "pi",
                         "message": final_text,
@@ -478,6 +571,7 @@ async def _stream_pi_rpc_chat(
     trace: list[dict[str, Any]] = []
     streamed_text_chunks: list[str] = []
     latest_assistant_text = ""
+    latest_error_detail = ""
     client: PiRpcClient | None = None
 
     try:
@@ -497,6 +591,9 @@ async def _stream_pi_rpc_chat(
                 request_id=request_id,
             ):
                 event_type = str(event.get("type") or "")
+                event_error_detail = _extract_rpc_error_detail_from_event(event)
+                if event_error_detail:
+                    latest_error_detail = event_error_detail
 
                 if event_type == "message_update":
                     assistant_event = event.get("assistantMessageEvent")
@@ -551,7 +648,7 @@ async def _stream_pi_rpc_chat(
                         final_text = "".join(streamed_text_chunks).strip()
                     yield {
                         "type": "final",
-                        "message": final_text or "Pi RPC 未返回可见文本。",
+                        "message": final_text or _no_visible_text_message(latest_error_detail),
                         "warnings": [],
                         "trace": trace,
                         "consulted_pages": consulted_pages,

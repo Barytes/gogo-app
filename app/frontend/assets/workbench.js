@@ -47,6 +47,7 @@ const providerModelsShellEl = document.querySelector("#provider-models-shell");
 const providerModelsTextEl = document.querySelector("#provider-models-text");
 const providerOauthIntroShellEl = document.querySelector("#provider-oauth-intro-shell");
 const providerApiActionsEl = document.querySelector("#provider-api-actions");
+const importProviderJsonButtonEl = document.querySelector("#import-provider-json-button");
 const saveProviderButtonEl = document.querySelector("#save-provider-button");
 const providerDesktopLoginButtonEl = document.querySelector("#provider-desktop-login-button");
 const resetProviderButtonEl = document.querySelector("#reset-provider-button");
@@ -521,6 +522,249 @@ function parseLocalInputToMs(rawValue) {
   return Number.isFinite(time) ? time : null;
 }
 
+function normalizeImportedModelItem(rawItem) {
+  if (!rawItem || typeof rawItem !== "object" || Array.isArray(rawItem)) {
+    return null;
+  }
+  const modelId = String(rawItem.id || "").trim();
+  if (!modelId) {
+    return null;
+  }
+  const item = { id: modelId };
+  const name = String(rawItem.name || "").trim();
+  if (name) {
+    item.name = name;
+  }
+  if (Object.prototype.hasOwnProperty.call(rawItem, "reasoning")) {
+    item.reasoning = Boolean(rawItem.reasoning);
+  }
+  if (Array.isArray(rawItem.input)) {
+    const normalizedInput = rawItem.input
+      .map((value) => String(value || "").trim().toLowerCase())
+      .filter(Boolean);
+    if (normalizedInput.length) {
+      item.input = normalizedInput;
+    }
+  }
+  ["cost", "compat"].forEach((key) => {
+    if (rawItem[key] && typeof rawItem[key] === "object" && !Array.isArray(rawItem[key])) {
+      item[key] = rawItem[key];
+    }
+  });
+  ["contextWindow", "maxTokens"].forEach((key) => {
+    const value = Number(rawItem[key]);
+    if (Number.isFinite(value) && value > 0) {
+      item[key] = value;
+    }
+  });
+  Object.entries(rawItem).forEach(([key, value]) => {
+    if (key in item || ["id", "name", "reasoning", "input", "cost", "compat", "contextWindow", "maxTokens"].includes(key)) {
+      return;
+    }
+    if (
+      typeof value === "string" ||
+      typeof value === "boolean" ||
+      (typeof value === "number" && Number.isFinite(value))
+    ) {
+      item[key] = value;
+      return;
+    }
+    if (value && typeof value === "object") {
+      item[key] = value;
+    }
+  });
+  return item;
+}
+
+function pickImportedProviderConfig(source) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) {
+    return null;
+  }
+
+  const directModels = Array.isArray(source.models) ? source.models : null;
+  if (directModels) {
+    return {
+      providerKey: String(source.provider || source.providerKey || "").trim(),
+      displayName: String(source.name || source.displayName || "").trim(),
+      config: source,
+      rawModels: directModels,
+    };
+  }
+
+  const nestedModels = source.models;
+  if (nestedModels && typeof nestedModels === "object" && !Array.isArray(nestedModels)) {
+    if (Array.isArray(nestedModels.models)) {
+      return {
+        providerKey: String(nestedModels.provider || nestedModels.providerKey || "").trim(),
+        displayName: String(nestedModels.name || nestedModels.displayName || "").trim(),
+        config: nestedModels,
+        rawModels: nestedModels.models,
+      };
+    }
+
+    const providers = nestedModels.providers;
+    if (providers && typeof providers === "object" && !Array.isArray(providers)) {
+      const preferredKey = String(providerKeyInputEl?.value || "").trim();
+      const entries = Object.entries(providers).filter(
+        ([, value]) => value && typeof value === "object" && !Array.isArray(value) && Array.isArray(value.models)
+      );
+      if (!entries.length) {
+        return null;
+      }
+      const matched =
+        entries.find(([key]) => key === preferredKey) ||
+        entries.find(([key]) => key.toLowerCase() === preferredKey.toLowerCase()) ||
+        entries[0];
+      const [providerKey, providerConfig] = matched;
+      return {
+        providerKey: String(providerKey || "").trim(),
+        displayName: String(providerConfig.name || providerConfig.displayName || providerKey || "").trim(),
+        config: providerConfig,
+        rawModels: providerConfig.models,
+      };
+    }
+  }
+
+  return null;
+}
+
+function normalizeImportJsonText(rawValue) {
+  const text = String(rawValue || "").trim();
+  if (!text) {
+    return "";
+  }
+  if (text.startsWith("{") || text.startsWith("[")) {
+    return text;
+  }
+  if (/^"(?:[^"\\]|\\.)+"\s*:/.test(text)) {
+    return `{${text}}`;
+  }
+  return text;
+}
+
+function parseProviderImportPayload(rawValue) {
+  const text = normalizeImportJsonText(rawValue);
+  if (!text || (!text.startsWith("{") && !text.startsWith("["))) {
+    return null;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(text);
+  } catch (error) {
+    throw new Error(`模型配置 JSON 解析失败：${error.message}`);
+  }
+
+  if (Array.isArray(parsed)) {
+    const models = parsed.map(normalizeImportedModelItem).filter(Boolean);
+    if (!models.length) {
+      return null;
+    }
+    return {
+      providerKey: "",
+      displayName: "",
+      models,
+      baseUrl: "",
+      apiKey: "",
+      apiType: "",
+    };
+  }
+
+  const source =
+    parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+  const importedProvider = pickImportedProviderConfig(source);
+  const rawModels = importedProvider?.rawModels;
+  if (!Array.isArray(rawModels)) {
+    return null;
+  }
+
+  const models = rawModels.map(normalizeImportedModelItem).filter(Boolean);
+  if (!models.length) {
+    return null;
+  }
+
+  return {
+    providerKey: String(importedProvider?.providerKey || "").trim(),
+    displayName: String(importedProvider?.displayName || "").trim(),
+    models,
+    baseUrl: String(importedProvider?.config?.baseUrl || importedProvider?.config?.base_url || source.baseUrl || source.base_url || "").trim(),
+    apiKey: String(importedProvider?.config?.apiKey || importedProvider?.config?.api_key || source.apiKey || source.api_key || "").trim(),
+    apiType: String(importedProvider?.config?.api || importedProvider?.config?.apiType || importedProvider?.config?.api_type || source.api || source.apiType || source.api_type || "").trim(),
+  };
+}
+
+function applyProviderImportPayload(payload) {
+  if (!payload || !Array.isArray(payload.models) || !payload.models.length) {
+    return false;
+  }
+  if (payload.providerKey && providerKeyInputEl && !String(providerKeyInputEl.value || "").trim()) {
+    providerKeyInputEl.value = payload.providerKey;
+  }
+  if (payload.displayName && providerDisplayNameInputEl && !String(providerDisplayNameInputEl.value || "").trim()) {
+    providerDisplayNameInputEl.value = payload.displayName;
+  }
+  if (providerModelsTextEl) {
+    providerModelsTextEl.value = JSON.stringify({ models: payload.models }, null, 2);
+  }
+  if (payload.baseUrl && providerBaseUrlInputEl) {
+    providerBaseUrlInputEl.value = payload.baseUrl;
+  }
+  if (payload.apiKey && providerApiKeyInputEl) {
+    providerApiKeyInputEl.value = payload.apiKey;
+  }
+  if (payload.apiType && providerApiTypeSelectEl) {
+    const nextApiType = payload.apiType;
+    const hasOption = providerApiTypes().includes(nextApiType);
+    if (!hasOption) {
+      const option = document.createElement("option");
+      option.value = nextApiType;
+      option.textContent = nextApiType;
+      providerApiTypeSelectEl.appendChild(option);
+    }
+    providerApiTypeSelectEl.value = nextApiType;
+  }
+  return true;
+}
+
+function tryImportProviderConfigFromModelsText({ silent = false } = {}) {
+  if (providerFormMode !== "api" || !providerModelsTextEl) {
+    return false;
+  }
+  const text = normalizeImportJsonText(providerModelsTextEl.value);
+  if (!text || (!text.startsWith("{") && !text.startsWith("["))) {
+    return false;
+  }
+  try {
+    const payload = parseProviderImportPayload(text);
+    if (!payload) {
+      return false;
+    }
+    const applied = applyProviderImportPayload(payload);
+    if (applied && !silent) {
+      setProviderFeedback("");
+      showSettingsToast("已从 JSON 中识别并填充 API 配置与模型列表。");
+    }
+    return applied;
+  } catch (error) {
+    if (!silent) {
+      setProviderFeedback(String(error.message || error), true);
+    }
+    return false;
+  }
+}
+
+function importProviderConfigFromModelsText() {
+  const text = String(providerModelsTextEl?.value || "").trim();
+  if (!text) {
+    setProviderFeedback("请先粘贴厂商提供的 JSON 配置。", true);
+    return;
+  }
+  const imported = tryImportProviderConfigFromModelsText({ silent: false });
+  if (!imported) {
+    setProviderFeedback("没有识别到可导入的模型 JSON，请确认配置里包含 `models` 数组。", true);
+  }
+}
+
 function renderApiTypeOptions() {
   if (!providerApiTypeSelectEl) {
     return;
@@ -952,6 +1196,7 @@ async function triggerDesktopPiLogin(providerKey) {
 }
 
 async function saveProviderProfile() {
+  tryImportProviderConfigFromModelsText({ silent: true });
   const payload = providerSavePayload();
   if (!payload.provider_key) {
     setProviderFeedback("请先填写 Provider Key。", true);
@@ -1031,6 +1276,7 @@ providerAuthModeSelectEl?.addEventListener("change", () => {
   applyProviderAuthMode(String(providerAuthModeSelectEl.value || "desktop-pi-login"));
 });
 saveProviderButtonEl?.addEventListener("click", saveProviderProfile);
+importProviderJsonButtonEl?.addEventListener("click", importProviderConfigFromModelsText);
 providerDesktopLoginButtonEl?.addEventListener("click", async () => {
   await triggerDesktopPiLogin(String(providerKeyInputEl?.value || "").trim());
 });
@@ -1062,6 +1308,16 @@ providerOauthPresetSelectEl?.addEventListener("change", () => {
     providerDisplayNameInputEl.value = preset.label || preset.id;
   }
   applyProviderAuthMode("desktop-pi-login");
+});
+
+providerModelsTextEl?.addEventListener("blur", () => {
+  void tryImportProviderConfigFromModelsText();
+});
+
+providerModelsTextEl?.addEventListener("paste", () => {
+  window.setTimeout(() => {
+    void tryImportProviderConfigFromModelsText({ silent: true });
+  }, 0);
 });
 
 settingsOverlayEl?.addEventListener("click", (event) => {

@@ -322,7 +322,7 @@ class UpsertModelProviderRequest(BaseModel):
     display_name: str = Field(default="", description="展示名称")
     base_url: str = Field(default="", description="Provider 基础 URL")
     api_type: str = Field(default="", description="Provider API 类型")
-    models_text: str = Field(default="", description="模型列表文本")
+    models_text: str = Field(default="", description="模型配置 JSON 文本")
     auth_header: bool = Field(default=False, description="是否自动附加 Bearer Authorization")
     api_key: str = Field(default="", description="API key")
     clear_secret: bool = Field(default=False, description="是否清除已保存的 API key")

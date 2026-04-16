@@ -343,7 +343,7 @@
 		                    </label>
 		                    <div id="provider-api-secret-shell" class="settings-field">
 		                      <label for="provider-api-key-input">API Key</label>
-		                      <input id="provider-api-key-input" class="settings-input" type="password" placeholder="留空则保留已保存的 key" />
+		                      <input id="provider-api-key-input" class="settings-input" type="text" placeholder="留空则保留已保存的 key" />
 		                    </div>
 		                    <div id="provider-oauth-token-shell" class="settings-grid hidden">
 		                      <div class="settings-field">
@@ -364,15 +364,15 @@
 		                      </div>
 		                    </div>
 		                    <div id="provider-models-shell" class="settings-field">
-		                      <label for="provider-models-text">模型列表</label>
+		                      <label for="provider-models-text">模型配置 JSON</label>
 		                      <textarea
 		                        id="provider-models-text"
 		                        class="settings-input settings-textarea settings-monospace"
-		                        rows="6"
-		                        placeholder="一行一个模型。格式：model-id | 展示名称 | reasoning/plain | image/text"
+		                        rows="12"
+		                        placeholder='{"models":[{"id":"glm-5","name":"GLM-5","reasoning":false,"input":["text"],"contextWindow":202752,"maxTokens":16384}]}'
 		                      ></textarea>
 		                      <p class="settings-help">
-		                        如果是自定义 API Provider，通常至少要配置一行模型。内置 OAuth Provider 如果已经自带模型，这里可以留空。
+		                        支持直接粘贴主流厂商使用的整段 JSON 配置。可以传 <code>{ "models": [...] }</code>、直接传模型数组 <code>[...]</code>，也可以粘带有 <code>baseUrl</code>、<code>apiKey</code>、<code>api</code> 的完整对象，系统会自动提取并回填上方字段。API 模式下至少需要配置一个模型。
 		                      </p>
 		                    </div>
 		                    <div id="provider-oauth-intro-shell" class="settings-field hidden">
@@ -383,11 +383,12 @@
 		                        <button id="provider-desktop-login-button" class="button button-secondary" type="button">打开终端 Pi 登录</button>
 		                      </div>
 		                    </div>
+		                    <p id="provider-settings-feedback" class="settings-feedback hidden" aria-live="polite"></p>
 		                    <div id="provider-api-actions" class="settings-actions">
+		                      <button id="import-provider-json-button" class="button button-secondary" type="button">从 JSON 导入</button>
 		                      <button id="save-provider-button" class="button button-primary" type="button">保存 Provider</button>
 		                      <button id="reset-provider-button" class="button button-secondary" type="button">清空表单</button>
 		                    </div>
-		                    <p id="provider-settings-feedback" class="settings-feedback hidden" aria-live="polite"></p>
 		                  </div>
 		                </div>
 		              </section>
