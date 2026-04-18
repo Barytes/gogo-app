@@ -36,7 +36,9 @@ from .config import (
     get_pi_extension_paths,
     get_pi_rpc_session_dir,
     get_pi_timeout_seconds,
+    get_startup_settings,
     is_desktop_runtime,
+    complete_startup_onboarding,
     set_knowledge_base_dir,
     upsert_model_provider_profile,
 )
@@ -376,6 +378,10 @@ class UpdateSessionSettingsRequest(BaseModel):
     model_id: str | None = Field(default=None, description="模型 ID")
 
 
+class CompactSessionRequest(BaseModel):
+    custom_instructions: str = Field(default="", description="可选：compact 时附带的额外说明")
+
+
 class UpdateKnowledgeBaseRequest(BaseModel):
     path: str = Field(..., min_length=1, description="本地知识库路径")
 
@@ -449,6 +455,60 @@ def _resolve_request_id(raw_request_id: str | None) -> str:
     if raw_request_id and raw_request_id.strip():
         return raw_request_id.strip()
     return str(uuid.uuid4())
+
+
+def _normalize_context_usage(raw_usage: object) -> dict[str, object] | None:
+    if not isinstance(raw_usage, dict):
+        return None
+
+    tokens = raw_usage.get("tokens")
+    context_window = raw_usage.get("contextWindow")
+    percent = raw_usage.get("percent")
+
+    normalized: dict[str, object] = {}
+    if isinstance(tokens, (int, float)):
+        normalized["tokens"] = max(0, int(tokens))
+    elif tokens is None:
+        normalized["tokens"] = None
+
+    if isinstance(context_window, (int, float)):
+        normalized["contextWindow"] = max(0, int(context_window))
+
+    if isinstance(percent, (int, float)):
+        normalized["percent"] = max(0.0, min(100.0, float(percent)))
+    elif (
+        isinstance(normalized.get("tokens"), int)
+        and isinstance(normalized.get("contextWindow"), int)
+        and int(normalized["contextWindow"]) > 0
+    ):
+        normalized["percent"] = min(
+            100.0,
+            max(0.0, (int(normalized["tokens"]) / int(normalized["contextWindow"])) * 100.0),
+        )
+    else:
+        normalized["percent"] = None
+
+    return normalized or None
+
+
+def _session_payload_with_runtime(session_id: str, *, pool=None) -> dict[str, object]:
+    active_pool = pool or get_session_pool()
+    session = active_pool.get_session(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
+
+    payload = session.info.to_dict()
+
+    try:
+        stats = active_pool.get_session_stats(session_id)
+    except Exception:
+        logger.warning("Failed to load session stats for %s", session_id, exc_info=True)
+        stats = {}
+
+    payload["context_usage"] = _normalize_context_usage(stats.get("contextUsage"))
+    tokens = stats.get("tokens")
+    payload["token_usage"] = tokens if isinstance(tokens, dict) else None
+    return payload
 
 
 def _frontend_file_response(path: Path) -> FileResponse:
@@ -601,6 +661,7 @@ def get_app_settings() -> dict[str, object]:
         "knowledge_base": get_knowledge_base_settings(),
         "model_providers": get_model_provider_settings(),
         "pi_install": _get_pi_install_status(),
+        "startup": get_startup_settings(),
     }
 
 
@@ -619,7 +680,17 @@ def update_knowledge_base(request: UpdateKnowledgeBaseRequest) -> dict[str, obje
     return {
         "success": True,
         "knowledge_base": settings,
+        "startup": get_startup_settings(),
         "detail": "知识库已切换，会话目录已按知识库隔离。",
+    }
+
+
+@app.post("/api/settings/startup/complete")
+def finish_startup_onboarding() -> dict[str, object]:
+    return {
+        "success": True,
+        "startup": complete_startup_onboarding(),
+        "detail": "首次启动引导已完成。",
     }
 
 
@@ -1096,7 +1167,7 @@ def create_session(request: CreateSessionRequest) -> dict[str, object]:
     session = pool.get_session(session_id)
     if not session:
         raise HTTPException(status_code=500, detail="Session created but not found in pool")
-    return {"session_id": session_id, "session": session.info.to_dict()}
+    return {"session_id": session_id, "session": _session_payload_with_runtime(session_id, pool=pool)}
 
 
 @app.delete("/api/sessions/{session_id}")
@@ -1153,17 +1224,67 @@ def update_session_settings(session_id: str, request: UpdateSessionSettingsReque
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
-    return {"success": True, "session_id": session_id, "session": session}
+    return {
+        "success": True,
+        "session_id": session_id,
+        "session": _session_payload_with_runtime(session_id, pool=pool),
+    }
 
 
 @app.get("/api/sessions/{session_id}")
 def get_session(session_id: str) -> dict[str, object]:
     """获取会话详情"""
     pool = get_session_pool()
+    return {"session": _session_payload_with_runtime(session_id, pool=pool)}
+
+
+@app.get("/api/sessions/{session_id}/stats")
+def get_session_stats(session_id: str) -> dict[str, object]:
+    pool = get_session_pool()
     session = pool.get_session(session_id)
     if not session:
         raise HTTPException(status_code=404, detail=f"Session not found: {session_id}")
-    return {"session": session.info.to_dict()}
+
+    try:
+        stats = pool.get_session_stats(session_id)
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "session_id": session_id,
+        "context_usage": _normalize_context_usage(stats.get("contextUsage")),
+        "token_usage": stats.get("tokens") if isinstance(stats.get("tokens"), dict) else None,
+    }
+
+
+@app.post("/api/sessions/{session_id}/compact")
+def compact_session(session_id: str, request: CompactSessionRequest) -> dict[str, object]:
+    pool = get_session_pool()
+    try:
+        payload = pool.compact_session(
+            session_id,
+            custom_instructions=request.custom_instructions,
+        )
+    except KeyError as exc:
+        raise HTTPException(status_code=404, detail=f"Session not found: {session_id}") from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    stats = payload.get("stats") if isinstance(payload, dict) else {}
+    result = payload.get("result") if isinstance(payload, dict) else {}
+    return {
+        "success": True,
+        "session_id": session_id,
+        "result": result if isinstance(result, dict) else {},
+        "context_usage": _normalize_context_usage(stats.get("contextUsage") if isinstance(stats, dict) else None),
+        "token_usage": stats.get("tokens") if isinstance(stats, dict) and isinstance(stats.get("tokens"), dict) else None,
+    }
 
 
 @app.get("/api/sessions/{session_id}/history")

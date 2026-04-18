@@ -23,6 +23,14 @@ const modelButtonEl = document.querySelector("#chat-model-button");
 const modelMenuEl = document.querySelector("#chat-model-menu");
 const thinkingButtonEl = document.querySelector("#chat-thinking-button");
 const thinkingMenuEl = document.querySelector("#chat-thinking-menu");
+const contextShellEl = document.querySelector("#chat-context-shell");
+const contextButtonEl = document.querySelector("#chat-context-button");
+const contextRingEl = document.querySelector("#chat-context-ring");
+const contextPopoverEl = document.querySelector("#chat-context-popover");
+const contextPercentEl = document.querySelector("#chat-context-percent");
+const contextTokensEl = document.querySelector("#chat-context-tokens");
+const contextHelpEl = document.querySelector("#chat-context-help");
+const contextCompactButtonEl = document.querySelector("#chat-context-compact-button");
 const slashButtonEl = document.querySelector("#chat-slash-button");
 const slashPanelEl = document.querySelector("#chat-slash-panel");
 const slashListEl = document.querySelector("#chat-slash-list");
@@ -100,6 +108,7 @@ let availableSlashCommands = [];
 let slashPanelVisible = false;
 let slashPanelManual = false;
 let slashPanelActiveIndex = 0;
+let contextPopoverHideTimer = null;
 let activeQuestionIndex = -1;
 let chatQuestionPopoverHideTimer = null;
 let questionAnchorsCache = [];
@@ -124,6 +133,28 @@ function scheduleChatQuestionPopoverHide(delay = 500) {
   chatQuestionPopoverHideTimer = window.setTimeout(() => {
     chatQuestionNavEl?.classList.remove("is-open");
     chatQuestionPopoverHideTimer = null;
+  }, delay);
+}
+
+function clearContextPopoverHideTimer() {
+  if (contextPopoverHideTimer) {
+    window.clearTimeout(contextPopoverHideTimer);
+    contextPopoverHideTimer = null;
+  }
+}
+
+function openContextPopover() {
+  clearContextPopoverHideTimer();
+  contextShellEl?.classList.add("is-open");
+  contextButtonEl?.setAttribute("aria-expanded", "true");
+}
+
+function scheduleContextPopoverHide(delay = 400) {
+  clearContextPopoverHideTimer();
+  contextPopoverHideTimer = window.setTimeout(() => {
+    contextShellEl?.classList.remove("is-open");
+    contextButtonEl?.setAttribute("aria-expanded", "false");
+    contextPopoverHideTimer = null;
   }, delay);
 }
 
@@ -218,6 +249,146 @@ function currentModelRecord() {
       (item) => item.provider === settings.model_provider && item.model_id === settings.model_id
     ) || null
   );
+}
+
+function currentSessionContextUsage() {
+  if (!currentSessionId) {
+    return null;
+  }
+  const session = sessionRecord(currentSessionId);
+  return session?.context_usage && typeof session.context_usage === "object"
+    ? session.context_usage
+    : null;
+}
+
+function currentSessionContextWindow() {
+  const usage = currentSessionContextUsage();
+  const fromUsage = Number(usage?.contextWindow);
+  if (Number.isFinite(fromUsage) && fromUsage > 0) {
+    return Math.max(0, Math.round(fromUsage));
+  }
+  const fromModel = Number(currentModelRecord()?.raw?.contextWindow);
+  if (Number.isFinite(fromModel) && fromModel > 0) {
+    return Math.max(0, Math.round(fromModel));
+  }
+  return null;
+}
+
+function currentSessionContextTokens() {
+  const usage = currentSessionContextUsage();
+  const tokens = Number(usage?.tokens);
+  if (!Number.isFinite(tokens) || tokens < 0) {
+    return null;
+  }
+  return Math.max(0, Math.round(tokens));
+}
+
+function currentSessionContextPercent() {
+  const usage = currentSessionContextUsage();
+  const percent = Number(usage?.percent);
+  if (Number.isFinite(percent) && percent >= 0) {
+    return Math.min(100, Math.max(0, percent));
+  }
+  const tokens = currentSessionContextTokens();
+  const contextWindow = currentSessionContextWindow();
+  if (tokens === null || !contextWindow) {
+    return null;
+  }
+  return Math.min(100, Math.max(0, (tokens / contextWindow) * 100));
+}
+
+function formatTokenCount(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return "—";
+  }
+  return Math.round(number).toLocaleString("en-US");
+}
+
+function formatContextPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return "—";
+  }
+  const rounded = Math.round(number * 10) / 10;
+  if (Number.isInteger(rounded)) {
+    return `${rounded}%`;
+  }
+  return `${rounded.toFixed(1)}%`;
+}
+
+function contextRingColor(percent) {
+  if (!Number.isFinite(percent)) {
+    return "rgba(24, 92, 82, 0.32)";
+  }
+  if (percent >= 90) {
+    return "#b1532f";
+  }
+  if (percent >= 75) {
+    return "#c3812d";
+  }
+  return "var(--brand)";
+}
+
+function refreshChatContextIndicator() {
+  const hasSession = Boolean(currentSessionId);
+  const isPendingForCurrent = Boolean(currentSessionId && pendingSessionIds.has(currentSessionId));
+  const tokens = currentSessionContextTokens();
+  const contextWindow = currentSessionContextWindow();
+  const percent = currentSessionContextPercent();
+  const shouldShow = hasSession;
+
+  contextShellEl?.classList.toggle("hidden", !shouldShow);
+  if (!shouldShow) {
+    clearContextPopoverHideTimer();
+    contextShellEl?.classList.remove("is-open");
+    contextButtonEl?.setAttribute("aria-expanded", "false");
+    return;
+  }
+
+  const progressPercent = Number.isFinite(percent) ? Math.min(100, Math.max(0, percent)) : 0;
+  const progressDeg = `${(progressPercent / 100) * 360}deg`;
+  const ringColor = contextRingColor(percent);
+  const percentText = Number.isFinite(percent) ? `${formatContextPercent(percent)} 已使用` : "等待统计";
+  const tokensText = `${formatTokenCount(tokens)} / ${formatTokenCount(contextWindow)} tokens`;
+  const helpText =
+    tokens === null && !contextWindow
+      ? "当前模型或会话还没有返回 context window 统计；一旦 Pi 提供数据，这里会自动刷新。"
+      : tokens === null
+        ? "刚完成 compact 或还没有最新回复时，Pi 可能暂时拿不到精确 token 统计。"
+        : "当上下文变长时，你可以用 /compact 压缩当前会话的 context window。";
+
+  if (contextRingEl) {
+    contextRingEl.style.setProperty("--context-progress", progressDeg);
+    contextRingEl.style.setProperty("--context-ring-color", ringColor);
+    contextRingEl.classList.toggle("is-empty", !Number.isFinite(percent));
+  }
+  if (contextButtonEl) {
+    contextButtonEl.disabled = isPendingForCurrent;
+    contextButtonEl.setAttribute("aria-expanded", "false");
+    contextButtonEl.title = Number.isFinite(percent)
+      ? `当前 context window 使用 ${formatContextPercent(percent)}`
+      : "当前 context window 使用情况";
+    contextButtonEl.setAttribute(
+      "aria-label",
+      Number.isFinite(percent)
+        ? `当前 context window 使用 ${formatContextPercent(percent)}，${tokensText}`
+        : `当前 context window 使用情况，${tokensText}`
+    );
+  }
+  if (contextPercentEl) {
+    contextPercentEl.textContent = percentText;
+  }
+  if (contextTokensEl) {
+    contextTokensEl.textContent = tokensText;
+  }
+  if (contextHelpEl) {
+    contextHelpEl.textContent = helpText;
+  }
+  if (contextCompactButtonEl) {
+    contextCompactButtonEl.disabled = !currentSessionId || isPendingForCurrent;
+    contextCompactButtonEl.title = "发送 /compact 压缩当前上下文";
+  }
 }
 
 function supportedThinkingLevelsForModel(model) {
@@ -920,6 +1091,7 @@ function refreshChatControls() {
   }
 
   renderChatControlMenus();
+  refreshChatContextIndicator();
   refreshSettingsHintState();
 }
 
@@ -1778,6 +1950,50 @@ function injectPrompt(text, replace = false) {
   focusChatInput();
 }
 
+async function sendCompactCommand() {
+  if (!contextCompactButtonEl || contextCompactButtonEl.disabled) {
+    return;
+  }
+  if (!currentSessionId) {
+    showSettingsHint("先开始一轮对话，再使用 /compact 压缩当前上下文。");
+    return;
+  }
+  if (pendingSessionIds.has(currentSessionId)) {
+    return;
+  }
+  const sessionId = currentSessionId;
+  contextCompactButtonEl.disabled = true;
+  try {
+    const safeSessionId = encodeURIComponent(sessionId);
+    const response = await fetch(`/api/sessions/${safeSessionId}/compact`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        custom_instructions: "",
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+    const payload = await response.json().catch(() => ({}));
+    const session = sessionRecord(sessionId);
+    if (session) {
+      session.context_usage = payload?.context_usage || null;
+      session.token_usage = payload?.token_usage || null;
+    }
+    refreshChatControls();
+    void refreshCurrentSessionDetailInBackground(sessionId);
+    showSettingsHint("已请求 Pi compact 当前会话。");
+  } catch (error) {
+    console.error("Failed to compact session:", error);
+    showSettingsHint(`Compact 失败：${error.message}`);
+  } finally {
+    refreshChatControls();
+  }
+}
+
 function buildWritebackPrompt() {
   return "请将上述回答写回wiki页面";
 }
@@ -1902,6 +2118,38 @@ chatQuestionPopoverEl?.addEventListener("mouseenter", () => {
 
 chatQuestionPopoverEl?.addEventListener("mouseleave", () => {
   scheduleChatQuestionPopoverHide();
+});
+
+contextShellEl?.addEventListener("mouseenter", () => {
+  openContextPopover();
+});
+
+contextShellEl?.addEventListener("mouseleave", () => {
+  scheduleContextPopoverHide();
+});
+
+contextShellEl?.addEventListener("focusin", () => {
+  openContextPopover();
+});
+
+contextShellEl?.addEventListener("focusout", () => {
+  window.setTimeout(() => {
+    if (!contextShellEl?.contains(document.activeElement)) {
+      scheduleContextPopoverHide();
+    }
+  }, 0);
+});
+
+contextPopoverEl?.addEventListener("mouseenter", () => {
+  openContextPopover();
+});
+
+contextPopoverEl?.addEventListener("mouseleave", () => {
+  scheduleContextPopoverHide();
+});
+
+contextCompactButtonEl?.addEventListener("click", async () => {
+  await sendCompactCommand();
 });
 
 messagesEl?.addEventListener("click", async (event) => {
@@ -2851,12 +3099,24 @@ function mergeSessionIntoCache(sessionPayload) {
 
 async function fetchSessionDetail(sessionId) {
   const safeSessionId = encodeURIComponent(sessionId);
-  const response = await fetch(`/api/sessions/${safeSessionId}`);
-  if (!response.ok) {
-    throw new Error(await extractErrorMessage(response));
+  const [detailResponse, statsResponse] = await Promise.all([
+    fetch(`/api/sessions/${safeSessionId}`),
+    fetch(`/api/sessions/${safeSessionId}/stats`),
+  ]);
+  if (!detailResponse.ok) {
+    throw new Error(await extractErrorMessage(detailResponse));
   }
-  const payload = await response.json();
-  return payload?.session || null;
+  const detailPayload = await detailResponse.json();
+  const session = detailPayload?.session || null;
+  if (!session) {
+    return null;
+  }
+  if (statsResponse.ok) {
+    const statsPayload = await statsResponse.json().catch(() => ({}));
+    session.context_usage = statsPayload?.context_usage || null;
+    session.token_usage = statsPayload?.token_usage || null;
+  }
+  return session;
 }
 
 async function refreshCurrentSessionDetailInBackground(sessionId) {
@@ -3242,6 +3502,7 @@ async function sendMessage(message) {
     pendingSessionIds.delete(requestSessionId);
     refreshChatPendingState();
     renderSessionList();
+    void refreshCurrentSessionDetailInBackground(requestSessionId);
     if (inboxFiles.length > 0 || /ingest|inbox/i.test(message)) {
       void refreshInboxFiles({ open: inboxPanelOpen, highlightPath: highlightedInboxPath });
     }

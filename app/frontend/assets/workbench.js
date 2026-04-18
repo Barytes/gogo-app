@@ -10,13 +10,23 @@ const knowledgeBaseNameEl = document.querySelector("#knowledge-base-name");
 const openSettingsButtonEl = document.querySelector("#open-settings-panel");
 const closeSettingsButtonEl = document.querySelector("#close-settings-panel");
 const settingsOverlayEl = document.querySelector("#settings-overlay");
+const settingsContentEl = document.querySelector(".settings-content");
 const settingsToastViewportEl = document.querySelector("#settings-toast-viewport");
 const startupOverlayEl = document.querySelector("#startup-overlay");
 const startupTitleEl = document.querySelector("#startup-title");
 const startupDescriptionEl = document.querySelector("#startup-description");
+const startupHelpEl = document.querySelector(".startup-help");
+const startupWizardProgressEl = document.querySelector("#startup-wizard-progress");
+const startupWizardPanelEl = document.querySelector("#startup-wizard-panel");
+const startupPhaseListEl = document.querySelector("#startup-phase-list");
 const startupStatusListEl = document.querySelector("#startup-status-list");
 const startupFeedbackEl = document.querySelector("#startup-feedback");
+const startupBackButtonEl = document.querySelector("#startup-back-button");
+const startupNextButtonEl = document.querySelector("#startup-next-button");
+const startupPickKnowledgeBaseButtonEl = document.querySelector("#startup-pick-knowledge-base-button");
 const startupInstallPiButtonEl = document.querySelector("#startup-install-pi-button");
+const startupConfigureModelButtonEl = document.querySelector("#startup-configure-model-button");
+const startupOpenDiagnosticsButtonEl = document.querySelector("#startup-open-diagnostics-button");
 const startupRetryButtonEl = document.querySelector("#startup-retry-button");
 const startupContinueButtonEl = document.querySelector("#startup-continue-button");
 const settingsNavButtonEls = Array.from(document.querySelectorAll("[data-settings-section]"));
@@ -47,6 +57,7 @@ const createSchemaButtonEl = document.querySelector("#create-schema-button");
 const capabilityCreateNameInputEl = document.querySelector("#capability-create-name-input");
 
 const providerProfileListEl = document.querySelector("#provider-profile-list");
+const settingsSectionModelProvidersEl = document.querySelector("#settings-section-model-providers");
 const providerProfileEmptyEl = document.querySelector("#provider-profile-empty");
 const providerModeApiButtonEl = document.querySelector("#provider-mode-api");
 const providerModeOauthButtonEl = document.querySelector("#provider-mode-oauth");
@@ -88,6 +99,9 @@ const diagnosticsKbListEl = document.querySelector("#diagnostics-kb-list");
 const diagnosticsPiListEl = document.querySelector("#diagnostics-pi-list");
 const diagnosticsSessionListEl = document.querySelector("#diagnostics-session-list");
 const diagnosticsProviderListEl = document.querySelector("#diagnostics-provider-list");
+const openDiagnosticsKbButtonEl = document.querySelector("#open-diagnostics-kb-button");
+const openDiagnosticsLogButtonEl = document.querySelector("#open-diagnostics-log-button");
+const exportDiagnosticsSummaryButtonEl = document.querySelector("#export-diagnostics-summary-button");
 
 const STORAGE_KEY = "research-kb-workbench-layout";
 const DESKTOP_PI_LOGIN_POLL_INTERVAL_MS = 2500;
@@ -126,6 +140,10 @@ const capabilityAgentsGuidanceState = {
 let desktopPiLoginPollToken = 0;
 let startupOverlayDismissed = false;
 let startupPiInstallPolling = false;
+let startupWizardStep = 0;
+let startupLoadFailure = "";
+const settingsSectionModelProvidersOriginalParent = settingsSectionModelProvidersEl?.parentNode || null;
+const settingsSectionModelProvidersOriginalNextSibling = settingsSectionModelProvidersEl?.nextSibling || null;
 const desktopBridge =
   typeof window !== "undefined" &&
   window.GogoDesktop &&
@@ -347,21 +365,327 @@ function renderKeyValueList(element, items) {
   });
 }
 
+function openSettingsSection(section) {
+  openSettingsPanel();
+  setActiveSettingsSection(section);
+}
+
+function pathPayloadReady(item) {
+  return Boolean(item && typeof item === "object" && item.exists && item.is_dir);
+}
+
+function providerSetupState() {
+  const profiles = providerProfiles();
+  const defaults = appSettings?.model_providers?.defaults || {};
+  const diagnosticsProviders = diagnosticsState.data?.providers || {};
+  const piRuntime = diagnosticsState.data?.pi_runtime || {};
+  const hasProfiles = profiles.length > 0;
+  const hasApiProfile =
+    profiles.some((item) => item?.config_kind === "api" && Number(item?.model_count || 0) > 0);
+  const hasOauthConnection =
+    profiles.some((item) => Boolean(item?.oauth_connected)) ||
+    Number(diagnosticsProviders.oauth_connected_count || 0) > 0;
+  const hasDefaultProvider = Boolean(String(defaults.provider || "").trim());
+  const hasDefaultModel = Boolean(
+    String(defaults.model || piRuntime.current_model_id || "").trim()
+  );
+  const hasRuntimeModels = Number(piRuntime.available_model_count || 0) > 0;
+  const ready =
+    (hasDefaultProvider && (hasDefaultModel || hasRuntimeModels)) ||
+    hasOauthConnection ||
+    (hasApiProfile && hasRuntimeModels);
+
+  let label = "尚未配置";
+  if (hasDefaultProvider && hasDefaultModel) {
+    label = `已选择默认模型：${defaults.provider}/${defaults.model || piRuntime.current_model_id || ""}`;
+  } else if (hasOauthConnection) {
+    label = "已完成 OAuth 登录，可继续进入工作流";
+  } else if (hasProfiles) {
+    label = hasRuntimeModels ? "已保存 Provider，可继续选择模型" : "已保存 Provider，仍需确认模型可用";
+  }
+
+  return {
+    ready,
+    hasProfiles,
+    hasApiProfile,
+    hasOauthConnection,
+    hasDefaultProvider,
+    hasDefaultModel,
+    hasRuntimeModels,
+    label,
+  };
+}
+
+function startupSettings() {
+  return appSettings?.startup || {};
+}
+
+function startupState() {
+  const diagnostics = diagnosticsState.data;
+  const piInstall = piInstallStatus();
+  const health = diagnostics?.health || {};
+  const knowledgeBase = diagnostics?.knowledge_base || {};
+  const startup = startupSettings();
+  const kbReady = diagnostics
+    ? [knowledgeBase.wiki_dir, knowledgeBase.raw_dir, knowledgeBase.inbox_dir].every(pathPayloadReady)
+    : Boolean(appSettings?.knowledge_base?.path);
+  const model = providerSetupState();
+  const runtimeHealthy = diagnostics
+    ? Boolean(health.pi_rpc_available) && Boolean(health.runtime_options_ok)
+    : false;
+
+  return {
+    diagnosticsLoaded: Boolean(diagnostics),
+    kbReady,
+    kbPath: String(knowledgeBase.path || appSettings?.knowledge_base?.path || "").trim(),
+    onboardingPending: Boolean(startup.onboarding_pending),
+    defaultKnowledgeBaseDir: String(startup.default_knowledge_base_dir || "").trim(),
+    usingDefaultKnowledgeBaseDir: Boolean(startup.using_default_knowledge_base_dir),
+    piReady: Boolean(piInstall.installed),
+    piInstalling: Boolean(piInstall.install_in_progress),
+    installSupported: Boolean(piInstall.install_supported),
+    runtimeHealthy,
+    model,
+    canBrowse: kbReady,
+    readyForWorkflow: kbReady && Boolean(piInstall.installed) && model.ready && runtimeHealthy,
+  };
+}
+
+function startupPhaseMeta(phase) {
+  if (phase === "ready") {
+    return { label: "已完成", className: "ready" };
+  }
+  if (phase === "active") {
+    return { label: "当前步骤", className: "active" };
+  }
+  return { label: "待完成", className: "pending" };
+}
+
+function renderStartupPhases(items) {
+  if (!startupPhaseListEl) {
+    return;
+  }
+  startupPhaseListEl.innerHTML = "";
+  items.forEach((item) => {
+    const meta = startupPhaseMeta(item.phase);
+    const article = document.createElement("article");
+    article.className = `startup-phase-card ${meta.className}`;
+
+    const top = document.createElement("div");
+    top.className = "startup-phase-top";
+
+    const title = document.createElement("p");
+    title.className = "startup-phase-title";
+    title.textContent = item.title;
+
+    const badge = document.createElement("span");
+    badge.className = `startup-phase-badge ${meta.className}`;
+    badge.textContent = meta.label;
+
+    top.appendChild(title);
+    top.appendChild(badge);
+
+    const description = document.createElement("p");
+    description.className = "startup-phase-detail";
+    description.textContent = item.detail;
+
+    article.appendChild(top);
+    article.appendChild(description);
+    startupPhaseListEl.appendChild(article);
+  });
+}
+
+function startupWizardSteps() {
+  return [
+    { id: "welcome", label: "欢迎" },
+    { id: "model", label: "模型" },
+    { id: "knowledge-base", label: "知识库" },
+  ];
+}
+
+function clampStartupWizardStep(step) {
+  const maxIndex = startupWizardSteps().length - 1;
+  return Math.max(0, Math.min(maxIndex, Number(step) || 0));
+}
+
+function setStartupWizardStep(step) {
+  startupWizardStep = clampStartupWizardStep(step);
+  renderStartupOverlay();
+}
+
+function restoreEmbeddedModelProviderPane() {
+  if (!settingsSectionModelProvidersEl || !settingsSectionModelProvidersOriginalParent) {
+    return;
+  }
+  if (settingsSectionModelProvidersEl.parentNode === settingsSectionModelProvidersOriginalParent) {
+    return;
+  }
+  settingsSectionModelProvidersEl.classList.remove("startup-embedded-pane");
+  const anchor = settingsSectionModelProvidersOriginalNextSibling;
+  if (anchor && anchor.parentNode === settingsSectionModelProvidersOriginalParent) {
+    settingsSectionModelProvidersOriginalParent.insertBefore(settingsSectionModelProvidersEl, anchor);
+  } else {
+    settingsSectionModelProvidersOriginalParent.appendChild(settingsSectionModelProvidersEl);
+  }
+}
+
+function mountModelProviderPane(host) {
+  if (!host || !settingsSectionModelProvidersEl) {
+    return;
+  }
+  setActiveSettingsSection("model-providers");
+  settingsSectionModelProvidersEl.classList.add("startup-embedded-pane");
+  if (settingsSectionModelProvidersEl.parentNode !== host) {
+    host.appendChild(settingsSectionModelProvidersEl);
+  }
+}
+
+function renderStartupWizardProgress(currentStep) {
+  if (!startupWizardProgressEl) {
+    return;
+  }
+  startupWizardProgressEl.innerHTML = "";
+  startupWizardProgressEl.classList.remove("hidden");
+  startupWizardSteps().forEach((item, index) => {
+    const node = document.createElement("div");
+    node.className = "startup-wizard-step";
+    node.classList.toggle("active", index === currentStep);
+    node.classList.toggle("done", index < currentStep);
+
+    const indexEl = document.createElement("span");
+    indexEl.className = "startup-wizard-step-index";
+    indexEl.textContent = String(index + 1);
+
+    const labelEl = document.createElement("span");
+    labelEl.className = "startup-wizard-step-label";
+    labelEl.textContent = item.label;
+
+    node.appendChild(indexEl);
+    node.appendChild(labelEl);
+    startupWizardProgressEl.appendChild(node);
+  });
+}
+
+function renderStartupWizardPanel(currentStep, startup, status) {
+  if (!startupWizardPanelEl) {
+    return;
+  }
+
+  startupWizardPanelEl.innerHTML = "";
+  startupWizardPanelEl.classList.remove("hidden");
+
+  const section = document.createElement("section");
+  section.className = "startup-wizard-section";
+
+  if (currentStep === 0) {
+    const message = document.createElement("p");
+    message.className = "startup-wizard-lead";
+    message.textContent = "欢迎来到 gogo-app。";
+
+    const detail = document.createElement("p");
+    detail.className = "startup-wizard-copy";
+    detail.textContent = "接下来只需要两步：先配置模型，再确认你的知识库目录。完成后就可以进入主界面。";
+
+    section.appendChild(message);
+    section.appendChild(detail);
+  } else if (currentStep === 1) {
+    section.classList.add("startup-wizard-section-model");
+
+    const detail = document.createElement("p");
+    detail.className = "startup-wizard-copy";
+    if (!startup.piReady) {
+      detail.textContent = status.install_supported
+        ? "先安装 Pi，然后在下面直接保存一个 API key provider，或通过 Pi OAuth 完成登录。"
+        : "当前还没有可用的 Pi。请先处理 Pi 环境，再继续模型配置。";
+    } else if (startup.model.ready) {
+      detail.textContent = `当前状态：${startup.model.label}`;
+    } else {
+      detail.textContent = "请直接在下面完成模型接入。保存成功后，这一步会自动变成可继续。";
+    }
+    section.appendChild(detail);
+
+    const statusList = document.createElement("div");
+    statusList.className = "startup-wizard-inline-meta";
+    [
+      ["Pi", diagnosticsValue(status.command_source || status.command_path, startup.piReady ? "已安装" : "未就绪")],
+      ["模型状态", startup.model.label],
+      ["默认模型", diagnosticsValue(appSettings?.model_providers?.defaults?.model, "尚未选择")],
+    ].forEach(([label, value]) => {
+      const item = document.createElement("span");
+      item.className = "startup-wizard-meta-chip";
+
+      const chipLabel = document.createElement("strong");
+      chipLabel.textContent = `${label}：`;
+
+      const chipValue = document.createElement("span");
+      chipValue.textContent = value;
+
+      item.appendChild(chipLabel);
+      item.appendChild(chipValue);
+      statusList.appendChild(item);
+    });
+    section.appendChild(statusList);
+
+    const host = document.createElement("div");
+    host.className = "startup-embedded-pane-host";
+    section.appendChild(host);
+    startupWizardPanelEl.appendChild(section);
+    mountModelProviderPane(host);
+    return;
+  } else {
+    const card = document.createElement("div");
+    card.className = "startup-wizard-card";
+
+    const title = document.createElement("p");
+    title.className = "startup-wizard-card-title";
+    title.textContent = "选择你的知识库目录";
+
+    const detail = document.createElement("p");
+    detail.className = "startup-wizard-copy";
+    detail.textContent = "你可以使用默认位置，也可以选择一个更顺手的目录。之后仍然可以在设置里切换。";
+
+    card.appendChild(title);
+    card.appendChild(detail);
+
+    const statusList = document.createElement("dl");
+    statusList.className = "startup-wizard-kv";
+    [
+      ["当前位置", diagnosticsValue(startup.kbPath || startup.defaultKnowledgeBaseDir, "待创建")],
+      ["默认位置", diagnosticsValue(startup.defaultKnowledgeBaseDir, "待创建")],
+      ["后续可改", "可以"],
+    ].forEach(([label, value]) => {
+      const dt = document.createElement("dt");
+      dt.textContent = label;
+      const dd = document.createElement("dd");
+      dd.textContent = value;
+      statusList.appendChild(dt);
+      statusList.appendChild(dd);
+    });
+    card.appendChild(statusList);
+    section.appendChild(card);
+  }
+
+  startupWizardPanelEl.appendChild(section);
+}
+
 function shouldShowStartupOverlay() {
   if (!isDesktopRuntime()) {
     return false;
   }
+  if (startupLoadFailure) {
+    return true;
+  }
   if (!appSettings) {
-    return true;
-  }
-  const status = piInstallStatus();
-  if (status.install_in_progress) {
-    return true;
-  }
-  if (status.installed) {
     return false;
   }
-  return !startupOverlayDismissed;
+  const startup = startupState();
+  if (startup.piInstalling) {
+    return true;
+  }
+  if (startup.onboardingPending) {
+    return true;
+  }
+  return false;
 }
 
 function renderStartupOverlay() {
@@ -375,12 +699,59 @@ function renderStartupOverlay() {
     return;
   }
 
+  if (startupLoadFailure) {
+    startupWizardProgressEl?.classList.add("hidden");
+    startupWizardPanelEl?.classList.add("hidden");
+    startupPhaseListEl?.classList.add("hidden");
+    startupStatusListEl?.classList.remove("hidden");
+    startupHelpEl?.classList.remove("hidden");
+    startupTitleEl && (startupTitleEl.textContent = "启动检查失败");
+    startupDescriptionEl &&
+      (startupDescriptionEl.textContent =
+        "gogo-app 暂时没能读取当前桌面设置。你可以重新检查，或先进入工作台浏览 Wiki。");
+    renderKeyValueList(startupStatusListEl, [["错误", startupLoadFailure]]);
+    startupBackButtonEl?.classList.add("hidden");
+    startupNextButtonEl?.classList.add("hidden");
+    startupPickKnowledgeBaseButtonEl?.classList.add("hidden");
+    startupInstallPiButtonEl && (startupInstallPiButtonEl.disabled = true);
+    startupConfigureModelButtonEl?.classList.add("hidden");
+    startupOpenDiagnosticsButtonEl && (startupOpenDiagnosticsButtonEl.disabled = true);
+    startupRetryButtonEl?.classList.remove("hidden");
+    startupContinueButtonEl?.classList.remove("hidden");
+    startupContinueButtonEl && (startupContinueButtonEl.disabled = false);
+    setStartupFeedback(startupLoadFailure, true);
+    return;
+  }
+
   if (!appSettings) {
+    startupWizardProgressEl?.classList.add("hidden");
+    startupWizardPanelEl?.classList.add("hidden");
+    startupPhaseListEl?.classList.remove("hidden");
+    startupStatusListEl?.classList.remove("hidden");
+    startupHelpEl?.classList.remove("hidden");
     startupTitleEl && (startupTitleEl.textContent = "正在检查桌面环境");
     startupDescriptionEl &&
-      (startupDescriptionEl.textContent = "gogo-app 正在确认本地知识库工作台所需的运行环境，请稍候。");
+      (startupDescriptionEl.textContent =
+        "gogo-app 正在确认本地知识库、Pi 运行时和模型配置状态，请稍候。");
+    renderStartupPhases([
+      {
+        title: "读取应用设置",
+        detail: "正在读取 companion knowledge-base、Pi 安装状态和上次使用的配置。",
+        phase: "active",
+      },
+      {
+        title: "检查环境",
+        detail: "确认 raw / wiki / inbox、Pi 命令和模型配置是否已经就绪。",
+        phase: "pending",
+      },
+    ]);
     renderKeyValueList(startupStatusListEl, [["状态", "正在读取当前设置与运行时状态"]]);
+    startupBackButtonEl?.classList.add("hidden");
+    startupNextButtonEl?.classList.add("hidden");
+    startupPickKnowledgeBaseButtonEl?.classList.add("hidden");
     startupInstallPiButtonEl && (startupInstallPiButtonEl.disabled = true);
+    startupConfigureModelButtonEl && (startupConfigureModelButtonEl.disabled = true);
+    startupOpenDiagnosticsButtonEl && (startupOpenDiagnosticsButtonEl.disabled = true);
     startupRetryButtonEl?.classList.add("hidden");
     startupContinueButtonEl && (startupContinueButtonEl.disabled = true);
     setStartupFeedback("");
@@ -388,47 +759,188 @@ function renderStartupOverlay() {
   }
 
   const status = piInstallStatus();
+  const startup = startupState();
   const installSupported = Boolean(status.install_supported);
   const installed = Boolean(status.installed);
   const inProgress = Boolean(status.install_in_progress);
+  const model = startup.model;
 
-  startupContinueButtonEl && (startupContinueButtonEl.disabled = false);
+  if (!startup.onboardingPending || startupWizardStep !== 1) {
+    restoreEmbeddedModelProviderPane();
+  }
+
+  if (startup.onboardingPending) {
+    startupWizardStep = clampStartupWizardStep(startupWizardStep);
+    startupPhaseListEl?.classList.add("hidden");
+    startupStatusListEl?.classList.add("hidden");
+    startupHelpEl?.classList.add("hidden");
+    renderStartupWizardProgress(startupWizardStep);
+    renderStartupWizardPanel(startupWizardStep, startup, status);
+
+    const isWelcomeStep = startupWizardStep === 0;
+    const isModelStep = startupWizardStep === 1;
+    const isKnowledgeBaseStep = startupWizardStep === 2;
+
+    if (isWelcomeStep) {
+      startupTitleEl && (startupTitleEl.textContent = "欢迎使用 gogo-app");
+      startupDescriptionEl && (startupDescriptionEl.textContent = "我们先完成一个很短的首次配置。");
+    } else if (isModelStep) {
+      startupTitleEl && (startupTitleEl.textContent = "配置模型");
+      startupDescriptionEl &&
+        (startupDescriptionEl.textContent = "请先把你自己的模型接入 gogo-app。完成后再进入下一步。");
+    } else {
+      startupTitleEl && (startupTitleEl.textContent = "选择知识库目录");
+      startupDescriptionEl &&
+        (startupDescriptionEl.textContent = "最后一步：确认 companion knowledge-base 放在哪里。");
+    }
+
+    startupBackButtonEl?.classList.toggle("hidden", isWelcomeStep);
+    startupBackButtonEl && (startupBackButtonEl.disabled = false);
+
+    startupNextButtonEl?.classList.remove("hidden");
+    if (startupNextButtonEl) {
+      startupNextButtonEl.textContent = isKnowledgeBaseStep ? "完成并进入 gogo-app" : "下一步";
+      startupNextButtonEl.disabled =
+        (isModelStep && (!startup.piReady || !model.ready)) || (isKnowledgeBaseStep && !startup.kbReady);
+    }
+
+    startupPickKnowledgeBaseButtonEl?.classList.toggle("hidden", !isKnowledgeBaseStep);
+    startupPickKnowledgeBaseButtonEl &&
+      (startupPickKnowledgeBaseButtonEl.disabled = !isDesktopRuntime() || inProgress);
+
+    startupInstallPiButtonEl?.classList.toggle("hidden", !isModelStep || installed);
+    if (startupInstallPiButtonEl) {
+      startupInstallPiButtonEl.disabled = inProgress || installed || !installSupported;
+      startupInstallPiButtonEl.textContent = inProgress ? "正在安装 Pi..." : "安装 Pi";
+    }
+
+    startupConfigureModelButtonEl?.classList.add("hidden");
+
+    startupOpenDiagnosticsButtonEl?.classList.toggle("hidden", !isModelStep);
+    startupOpenDiagnosticsButtonEl && (startupOpenDiagnosticsButtonEl.disabled = false);
+
+    startupRetryButtonEl?.classList.add("hidden");
+    startupContinueButtonEl?.classList.add("hidden");
+
+    return;
+  }
+
+  startupWizardProgressEl?.classList.add("hidden");
+  startupWizardPanelEl?.classList.add("hidden");
+  startupPhaseListEl?.classList.remove("hidden");
+  startupStatusListEl?.classList.remove("hidden");
+  startupHelpEl?.classList.remove("hidden");
+
+  const phaseItems = [
+    {
+      title: "Knowledge Base",
+      detail: startup.kbReady
+        ? `已就绪：${startup.kbPath || "当前目录"}`
+        : startup.diagnosticsLoaded
+          ? "当前目录结构还不完整，gogo-app 会继续按 companion knowledge-base 模板补齐。"
+          : "正在确认 raw / wiki / inbox 目录。",
+      phase: startup.kbReady ? "ready" : "active",
+    },
+    {
+      title: "Pi 运行时",
+      detail: installed
+        ? `已就绪：${diagnosticsValue(status.command_source, "已安装")}`
+        : inProgress
+          ? "正在后台安装 Pi，完成后即可继续 `/login`、聊天、ingest 和写回。"
+          : installSupported
+            ? "尚未检测到 Pi，建议现在安装。"
+            : "当前还不能自动安装 Pi，需要先处理 npm / 安装器环境。",
+      phase: installed ? "ready" : "active",
+    },
+    {
+      title: "模型配置",
+      detail: model.label,
+      phase: model.ready ? "ready" : installed ? "active" : "pending",
+    },
+    {
+      title: "进入工作台",
+      detail: startup.readyForWorkflow
+        ? "环境已齐备，可以继续上传、ingest、聊天和写回。"
+        : "如果还没准备好模型，也可以先进入工作台浏览 Wiki。",
+      phase: startup.readyForWorkflow ? "ready" : model.ready ? "active" : "pending",
+    },
+  ];
+  renderStartupPhases(phaseItems);
+
+  startupBackButtonEl?.classList.add("hidden");
+  startupNextButtonEl?.classList.add("hidden");
+  startupContinueButtonEl && (startupContinueButtonEl.disabled = !startup.canBrowse || inProgress);
+  startupConfigureModelButtonEl && (startupConfigureModelButtonEl.disabled = false);
+  startupOpenDiagnosticsButtonEl && (startupOpenDiagnosticsButtonEl.disabled = false);
+  startupPickKnowledgeBaseButtonEl &&
+    (startupPickKnowledgeBaseButtonEl.disabled = !isDesktopRuntime() || inProgress);
   startupRetryButtonEl?.classList.toggle("hidden", inProgress);
 
-  if (installed) {
+  if (startup.readyForWorkflow) {
     startupOverlayEl.classList.add("hidden");
     return;
   }
 
-  if (inProgress) {
+  if (!startup.diagnosticsLoaded) {
+    startupTitleEl && (startupTitleEl.textContent = "正在补齐首次启动检查");
+    startupDescriptionEl &&
+      (startupDescriptionEl.textContent =
+        "基础设置已经读到，gogo-app 正在进一步确认知识库结构、Pi RPC 和模型配置状态。");
+  } else if (!startup.kbReady) {
+    startupTitleEl && (startupTitleEl.textContent = "正在准备 companion knowledge-base");
+    startupDescriptionEl &&
+      (startupDescriptionEl.textContent =
+        "gogo-app 已拿到知识库路径，正在确认里面的 raw、wiki 和 inbox 结构已经就绪。");
+  } else if (inProgress) {
     startupTitleEl && (startupTitleEl.textContent = "正在安装 Pi");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
         "gogo-app 正在后台准备 Pi 运行时。安装完成后，你就可以继续走 `/login`、聊天、ingest 和写回链路。");
-  } else if (installSupported) {
+  } else if (!installed && installSupported) {
     startupTitleEl && (startupTitleEl.textContent = "先安装 Pi，再进入完整工作流");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
         "检测到当前机器上还没有可用的 `pi`。你可以现在安装，gogo-app 会把它放到自己的托管目录，不会写进你的知识库。");
-  } else {
+  } else if (!installed) {
     startupTitleEl && (startupTitleEl.textContent = "当前还不能自动安装 Pi");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
         "这台机器上暂时没有检测到可用的 `npm`，所以 gogo-app 现在还没法自动补齐 `pi`。你仍然可以先进入工作台浏览 Wiki。");
+  } else if (!model.ready) {
+    startupTitleEl && (startupTitleEl.textContent = "再配置一个模型，就能走完整链路");
+    startupDescriptionEl &&
+      (startupDescriptionEl.textContent =
+        "Pi 已可用，下一步请在“模型配置”里保存一个 API key provider，或通过 Pi OAuth 完成登录。你也可以先跳过这一步，先浏览 Wiki。");
+  } else if (!startup.runtimeHealthy) {
+    startupTitleEl && (startupTitleEl.textContent = "运行时已经启动，但模型状态还没准备好");
+    startupDescriptionEl &&
+      (startupDescriptionEl.textContent =
+        "知识库、Pi 和模型配置已经基本就绪，不过 Pi RPC 还没返回可用模型状态。你可以查看诊断信息，或先进入工作台浏览 Wiki。");
   }
 
   renderKeyValueList(startupStatusListEl, [
-    ["平台", diagnosticsValue(status.platform)],
+    ["知识库", startup.kbReady ? diagnosticsValue(startup.kbPath, "已就绪") : "目录结构待确认"],
     ["Pi", diagnosticsValue(status.command_path || status.command, "未检测到")],
-    ["来源", diagnosticsValue(status.command_source, "待安装")],
-    ["npm", diagnosticsValue(status.npm_command_path, installSupported ? "可用" : "未检测到")],
+    ["模型", model.label],
+    ["运行时", startup.diagnosticsLoaded ? (startup.runtimeHealthy ? "已连通" : "待确认") : "正在检查"],
     ["日志", diagnosticsValue(status.install_log_path)],
-    ["说明", diagnosticsValue(status.detail)],
+    ["下一步", startup.readyForWorkflow ? "直接进入工作台" : !installed ? "安装 Pi" : !model.ready ? "配置模型" : "查看诊断"],
   ]);
 
   if (startupInstallPiButtonEl) {
+    startupInstallPiButtonEl.classList.remove("hidden");
+    startupInstallPiButtonEl.classList.toggle("hidden", installed && !inProgress);
     startupInstallPiButtonEl.disabled = inProgress || installed || !installSupported;
     startupInstallPiButtonEl.textContent = inProgress ? "正在安装 Pi..." : "安装 Pi";
+  }
+  startupPickKnowledgeBaseButtonEl?.classList.add("hidden");
+  if (startupConfigureModelButtonEl) {
+    startupConfigureModelButtonEl.classList.remove("hidden");
+    startupConfigureModelButtonEl.textContent = model.ready ? "查看模型配置" : "配置模型";
+  }
+  startupOpenDiagnosticsButtonEl?.classList.remove("hidden");
+  if (startupContinueButtonEl) {
+    startupContinueButtonEl.textContent = startup.readyForWorkflow ? "进入工作台" : "先浏览 Wiki";
   }
 }
 
@@ -987,6 +1499,33 @@ function diagnosticsValue(value, fallback = "—") {
   return text || fallback;
 }
 
+function diagnosticsPiSourceLabel(status) {
+  const source = String(status?.command_source || "").trim();
+  if (source === "bundled") {
+    return "随 gogo-app 提供";
+  }
+  if (source === "managed") {
+    return "由 gogo-app 安装";
+  }
+  if (source === "system") {
+    return "使用系统环境中的 Pi";
+  }
+  return diagnosticsValue(source, "未检测到");
+}
+
+function diagnosticsPiStatusLabel(runtime, install) {
+  if (install?.install_in_progress) {
+    return "安装中";
+  }
+  if (install?.installed && !runtime?.runtime_error) {
+    return "可用";
+  }
+  if (install?.installed) {
+    return "已安装，但运行异常";
+  }
+  return "未就绪";
+}
+
 function renderDiagnostics() {
   const payload = diagnosticsState.data;
   const health = payload?.health || {};
@@ -1024,25 +1563,14 @@ function renderDiagnostics() {
   ]);
 
   renderDiagnosticsList(diagnosticsPiListEl, [
-    ["命令", diagnosticsValue(piRuntime.command)],
-    ["命令路径", diagnosticsValue(piRuntime.command_path)],
-    ["打包命令", diagnosticsValue(piInstall.bundled_command_path)],
-    ["命令来源", diagnosticsValue(piInstall.command_source)],
-    ["打包目录", diagnosticsValue(piInstall.bundled_runtime_dir)],
-    ["托管命令", diagnosticsValue(piInstall.managed_command_path)],
-    ["npm", diagnosticsValue(piInstall.npm_command_path)],
-    ["支持应用内安装", diagnosticsValue(piInstall.install_supported)],
-    ["安装中", diagnosticsValue(piInstall.install_in_progress)],
-    ["安装日志", diagnosticsValue(piInstall.install_log_path)],
-    ["超时", diagnosticsValue(piRuntime.timeout_seconds, "已关闭")],
+    ["Pi 状态", diagnosticsPiStatusLabel(piRuntime, piInstall)],
+    ["Pi 来源", diagnosticsPiSourceLabel(piInstall)],
     ["工作目录", diagnosticsValue(piRuntime.workdir)],
-    ["默认思考", diagnosticsValue(piRuntime.default_thinking_level)],
     ["当前模型", diagnosticsValue(piRuntime.current_provider && piRuntime.current_model_id ? `${piRuntime.current_provider}/${piRuntime.current_model_id}` : "")],
     ["当前思考", diagnosticsValue(piRuntime.current_thinking_level)],
     ["可用模型数", diagnosticsValue(piRuntime.available_model_count)],
     ["可用 Provider 数", diagnosticsValue(piRuntime.available_provider_count)],
-    ["Extension", Array.isArray(providers.extension_paths) && providers.extension_paths.length ? providers.extension_paths.join("\n") : "未加载"],
-    ["安装说明", diagnosticsValue(piInstall.detail)],
+    ["登录/安装说明", diagnosticsValue(piInstall.detail)],
     ["Pi 错误", diagnosticsValue(piRuntime.runtime_error, "无")],
   ]);
 
@@ -1063,6 +1591,23 @@ function renderDiagnostics() {
     ["gogo 管理数", diagnosticsValue(providers.managed_count)],
     ["已连 OAuth", diagnosticsValue(providers.oauth_connected_count)],
   ]);
+  renderDiagnosticsActions();
+}
+
+function renderDiagnosticsActions() {
+  const payload = diagnosticsState.data;
+  const knowledgeBasePath = String(payload?.knowledge_base?.path || appSettings?.knowledge_base?.path || "").trim();
+  const logPath = String(payload?.pi_install?.install_log_path || "").trim();
+
+  if (openDiagnosticsKbButtonEl) {
+    openDiagnosticsKbButtonEl.disabled = !knowledgeBasePath;
+  }
+  if (openDiagnosticsLogButtonEl) {
+    openDiagnosticsLogButtonEl.disabled = !logPath;
+  }
+  if (exportDiagnosticsSummaryButtonEl) {
+    exportDiagnosticsSummaryButtonEl.disabled = diagnosticsState.loading || !payload;
+  }
 }
 
 async function loadDiagnostics(force = false) {
@@ -1071,6 +1616,7 @@ async function loadDiagnostics(force = false) {
   }
   if (!force && diagnosticsState.data) {
     renderDiagnostics();
+    renderStartupOverlay();
     return;
   }
   diagnosticsState.loading = true;
@@ -1086,12 +1632,13 @@ async function loadDiagnostics(force = false) {
     diagnosticsState.loadedAt = Date.now();
     renderDiagnostics();
     setDiagnosticsFeedback("");
-    showSettingsToast(`诊断信息已刷新：${diagnosticsValue(payload.generated_at)}`);
   } catch (error) {
     setDiagnosticsFeedback(`刷新失败：${error.message}`, true);
   } finally {
     diagnosticsState.loading = false;
     refreshDiagnosticsButtonEl && (refreshDiagnosticsButtonEl.disabled = false);
+    renderDiagnosticsActions();
+    renderStartupOverlay();
   }
 }
 
@@ -1784,25 +2331,113 @@ function renderSettings() {
   renderKnowledgeBaseSettings();
   renderCapabilitySettings();
   renderModelProviderSettings();
+  renderDiagnosticsActions();
   renderStartupOverlay();
 }
 
 async function loadAppSettings() {
+  startupLoadFailure = "";
   const response = await fetch("/api/settings");
   if (!response.ok) {
     throw new Error(`HTTP ${response.status}`);
   }
   appSettings = await response.json();
   renderSettings();
+  if (isDesktopRuntime() && !diagnosticsState.data && !diagnosticsState.loading) {
+    void loadDiagnostics(true).catch((error) => {
+      console.error("Failed to load startup diagnostics:", error);
+      renderStartupOverlay();
+    });
+  }
   if (piInstallStatus().install_in_progress && !startupPiInstallPolling) {
     void pollPiInstallUntilSettled();
   }
 }
 
 function openSettingsPanel() {
+  restoreEmbeddedModelProviderPane();
   settingsOverlayEl?.classList.remove("hidden");
   setActiveSettingsSection(activeSettingsSection);
   clearSettingsFeedback();
+}
+
+function buildDiagnosticsSummary() {
+  const payload = diagnosticsState.data;
+  if (!payload) {
+    return "";
+  }
+  const knowledgeBase = payload.knowledge_base || {};
+  const health = payload.health || {};
+  const piRuntime = payload.pi_runtime || {};
+  const piInstall = payload.pi_install || {};
+  const providers = payload.providers || {};
+  const defaults = providers.defaults || {};
+  return [
+    `生成时间: ${diagnosticsValue(payload.generated_at)}`,
+    "",
+    `[健康状态]`,
+    `运行时: ${diagnosticsValue(health.runtime)}`,
+    `桌面运行时: ${diagnosticsValue(health.desktop_runtime)}`,
+    `Pi RPC: ${diagnosticsValue(health.pi_rpc_available)}`,
+    `Pi 状态拉取: ${diagnosticsValue(health.runtime_options_ok)}`,
+    "",
+    `[知识库]`,
+    `名称: ${diagnosticsValue(knowledgeBase.name)}`,
+    `路径: ${diagnosticsValue(knowledgeBase.path)}`,
+    `Wiki: ${diagnosticsValue(knowledgeBase.wiki_dir?.path)}`,
+    `Raw: ${diagnosticsValue(knowledgeBase.raw_dir?.path)}`,
+    `Inbox: ${diagnosticsValue(knowledgeBase.inbox_dir?.path)}`,
+    "",
+    `[Pi]`,
+    `命令路径: ${diagnosticsValue(piRuntime.command_path || piRuntime.command)}`,
+    `命令来源: ${diagnosticsValue(piInstall.command_source)}`,
+    `安装日志: ${diagnosticsValue(piInstall.install_log_path)}`,
+    `运行时错误: ${diagnosticsValue(piRuntime.runtime_error, "无")}`,
+    "",
+    `[模型]`,
+    `默认 Provider: ${diagnosticsValue(defaults.provider)}`,
+    `默认模型: ${diagnosticsValue(defaults.model)}`,
+    `Profile 数: ${diagnosticsValue(providers.profile_count)}`,
+    `OAuth 已连通: ${diagnosticsValue(providers.oauth_connected_count)}`,
+  ].join("\n");
+}
+
+function downloadTextFile(filename, text) {
+  const blob = new Blob([String(text || "")], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement("a");
+  anchor.href = url;
+  anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+async function openDesktopPath(targetPath, label) {
+  const safePath = String(targetPath || "").trim();
+  if (!safePath) {
+    throw new Error(`${label}路径为空。`);
+  }
+  if (!isDesktopRuntime() || !desktopBridge?.openPath) {
+    throw new Error("当前不是桌面版运行时，无法直接打开本地路径。");
+  }
+  await desktopBridge.openPath(safePath);
+}
+
+async function exportDiagnosticsSummary() {
+  if (!diagnosticsState.data) {
+    await loadDiagnostics(true);
+  }
+  const text = buildDiagnosticsSummary();
+  if (!text) {
+    setDiagnosticsFeedback("当前还没有可导出的诊断信息。", true);
+    return;
+  }
+  const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+  downloadTextFile(`gogo-diagnostics-${timestamp}.txt`, text);
+  setDiagnosticsFeedback("");
+  showSettingsToast("诊断摘要已导出到本地下载目录。");
 }
 
 function cancelDesktopPiLoginPolling() {
@@ -1815,7 +2450,8 @@ function closeSettingsPanel() {
   clearSettingsFeedback();
 }
 
-async function applyKnowledgeBasePath(pathOverride = "") {
+async function applyKnowledgeBasePath(pathOverride = "", options = {}) {
+  const shouldReload = options.reload !== false;
   const nextPath = String(pathOverride || knowledgeBasePathInputEl?.value || "").trim();
   if (!nextPath) {
     setKnowledgeBaseFeedback("请输入知识库路径。", true);
@@ -1844,8 +2480,20 @@ async function applyKnowledgeBasePath(pathOverride = "") {
     if (!response.ok) {
       throw new Error(payload?.detail || `HTTP ${response.status}`);
     }
-    setKnowledgeBaseFeedback("知识库已切换，正在刷新页面...");
-    window.setTimeout(() => window.location.reload(), 250);
+    appSettings = {
+      ...(appSettings || {}),
+      knowledge_base: payload.knowledge_base || appSettings?.knowledge_base || {},
+      startup: payload.startup || appSettings?.startup || {},
+    };
+    renderSettings();
+    if (shouldReload) {
+      setKnowledgeBaseFeedback("知识库已切换，正在刷新页面...");
+      window.setTimeout(() => window.location.reload(), 250);
+    } else {
+      setKnowledgeBaseFeedback("知识库位置已更新。");
+      setStartupFeedback("");
+      await loadDiagnostics(true);
+    }
   } catch (error) {
     setKnowledgeBaseFeedback(`切换失败：${error.message}`, true);
   } finally {
@@ -1856,7 +2504,7 @@ async function applyKnowledgeBasePath(pathOverride = "") {
   }
 }
 
-async function pickKnowledgeBasePath() {
+async function pickKnowledgeBasePath(options = {}) {
   if (!isDesktopRuntime() || !desktopBridge?.selectKnowledgeBaseDirectory) {
     setKnowledgeBaseFeedback("当前不是桌面版运行时，暂时不能直接调用系统目录选择器。", true);
     return;
@@ -1875,14 +2523,30 @@ async function pickKnowledgeBasePath() {
     if (!nextPath) {
       throw new Error("目录选择器没有返回有效路径。");
     }
-    await applyKnowledgeBasePath(nextPath);
+    await applyKnowledgeBasePath(nextPath, options);
   } catch (error) {
     setKnowledgeBaseFeedback(`选择目录失败：${error.message}`, true);
+    setStartupFeedback(`选择目录失败：${error.message}`, true);
   } finally {
     if (pickKnowledgeBasePathButtonEl) {
       pickKnowledgeBasePathButtonEl.disabled = false;
     }
   }
+}
+
+async function completeStartupOnboarding() {
+  const response = await fetch("/api/settings/startup/complete", {
+    method: "POST",
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(payload?.detail || `HTTP ${response.status}`);
+  }
+  appSettings = {
+    ...(appSettings || {}),
+    startup: payload.startup || {},
+  };
+  renderSettings();
 }
 
 function providerSavePayload() {
@@ -2128,6 +2792,36 @@ providerInstallPiButtonEl?.addEventListener("click", async () => {
 startupInstallPiButtonEl?.addEventListener("click", async () => {
   await triggerPiInstall();
 });
+startupPickKnowledgeBaseButtonEl?.addEventListener("click", async () => {
+  await pickKnowledgeBasePath({ reload: false });
+});
+startupOpenDiagnosticsButtonEl?.addEventListener("click", async () => {
+  setStartupFeedback("诊断面板已打开。查看完成后关闭设置窗口即可回到当前步骤。");
+  openSettingsSection("diagnostics");
+  await loadDiagnostics(true);
+});
+startupBackButtonEl?.addEventListener("click", () => {
+  setStartupWizardStep(startupWizardStep - 1);
+});
+startupNextButtonEl?.addEventListener("click", () => {
+  void (async () => {
+    try {
+      if (!startupState().onboardingPending) {
+        return;
+      }
+      if (startupWizardStep < startupWizardSteps().length - 1) {
+        setStartupWizardStep(startupWizardStep + 1);
+        return;
+      }
+      await completeStartupOnboarding();
+      startupOverlayDismissed = true;
+      renderStartupOverlay();
+      setStartupFeedback("");
+    } catch (error) {
+      setStartupFeedback(`无法完成首次配置：${error.message}`, true);
+    }
+  })();
+});
 startupRetryButtonEl?.addEventListener("click", async () => {
   startupOverlayDismissed = false;
   setStartupFeedback("");
@@ -2139,9 +2833,21 @@ startupRetryButtonEl?.addEventListener("click", async () => {
   }
 });
 startupContinueButtonEl?.addEventListener("click", () => {
-  startupOverlayDismissed = true;
-  setStartupFeedback("");
-  renderStartupOverlay();
+  void (async () => {
+    try {
+      if (startupState().onboardingPending) {
+        await completeStartupOnboarding();
+        startupOverlayDismissed = true;
+        renderStartupOverlay();
+      } else {
+        startupOverlayDismissed = true;
+        renderStartupOverlay();
+      }
+      setStartupFeedback("");
+    } catch (error) {
+      setStartupFeedback(`无法继续：${error.message}`, true);
+    }
+  })();
 });
 providerDesktopLoginButtonEl?.addEventListener("click", async () => {
   await triggerDesktopPiLogin(String(providerKeyInputEl?.value || "").trim());
@@ -2152,6 +2858,28 @@ installPiButtonEl?.addEventListener("click", async () => {
 resetProviderButtonEl?.addEventListener("click", () => resetProviderForm(providerFormMode));
 refreshDiagnosticsButtonEl?.addEventListener("click", async () => {
   await loadDiagnostics(true);
+});
+openDiagnosticsKbButtonEl?.addEventListener("click", async () => {
+  try {
+    await openDesktopPath(
+      diagnosticsState.data?.knowledge_base?.path || appSettings?.knowledge_base?.path || "",
+      "知识库"
+    );
+    setDiagnosticsFeedback("");
+  } catch (error) {
+    setDiagnosticsFeedback(`打开失败：${error.message}`, true);
+  }
+});
+openDiagnosticsLogButtonEl?.addEventListener("click", async () => {
+  try {
+    await openDesktopPath(diagnosticsState.data?.pi_install?.install_log_path || "", "日志");
+    setDiagnosticsFeedback("");
+  } catch (error) {
+    setDiagnosticsFeedback(`打开失败：${error.message}`, true);
+  }
+});
+exportDiagnosticsSummaryButtonEl?.addEventListener("click", async () => {
+  await exportDiagnosticsSummary();
 });
 refreshCapabilityListButtonEl?.addEventListener("click", async () => {
   await loadCapabilities(true);
@@ -2249,21 +2977,11 @@ renderStartupOverlay();
 
 void loadAppSettings().catch((error) => {
   console.error("Failed to load app settings:", error);
+  startupLoadFailure = String(error.message || error);
   if (knowledgeBaseNameEl) {
     knowledgeBaseNameEl.textContent = "Knowledge Base";
   }
-  if (startupTitleEl) {
-    startupTitleEl.textContent = "启动检查失败";
-  }
-  if (startupDescriptionEl) {
-    startupDescriptionEl.textContent = "gogo-app 暂时没能读取当前桌面设置。你可以重新检查，或先进入工作台浏览 Wiki。";
-  }
-  renderKeyValueList(startupStatusListEl, [["错误", String(error.message || error)]]);
-  startupRetryButtonEl?.classList.remove("hidden");
-  startupContinueButtonEl && (startupContinueButtonEl.disabled = false);
-  startupInstallPiButtonEl && (startupInstallPiButtonEl.disabled = true);
-  setStartupFeedback(String(error.message || error), true);
-  startupOverlayEl?.classList.remove("hidden");
+  renderStartupOverlay();
 });
 
 resetProviderForm("api");

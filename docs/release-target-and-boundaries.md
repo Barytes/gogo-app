@@ -32,7 +32,7 @@
   1. 检测并安装 `pi`
   2. 配置模型/API key（允许跳过）
   3. 进入 companion knowledge-base
-  4. 若已完成模型配置，则可以直接跑 demo；若未配置，则至少可以浏览 Wiki
+  4. 若已完成模型配置，则可以继续上传 / ingest / 聊天 / 写回；若未配置，则至少可以浏览 Wiki
 - companion knowledge-base 会随安装包提供，并在安装/首次启动过程中让用户决定其安装路径
 - 用户后续可以切换到自己的 knowledge-base，同时 companion knowledge-base 仍保留为可随时切回的示例库
 - 首发模型配置支持：
