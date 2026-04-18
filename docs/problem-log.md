@@ -1,9 +1,50 @@
 # 开发问题记录
 
-**最后更新**: 2026-04-16
+**最后更新**: 2026-04-18
 
 > 用途：记录开发过程中出现过的真实问题、根因和解决方案，方便后续快速复用排查思路。  
 > 建议新增问题时尽量保持这几个字段：现象、影响范围、根因、修复、验证。
+
+## 2026-04-18：桌面打包回归导致 `.app` 崩溃、RPC 找不到 `pi`、模型/思考设置失败
+
+### 现象
+
+- 新 build 出来的 macOS `.app` 安装后启动即崩
+- 聊天 / 会话链路提示 `RPC 模式下未找到 pi 命令，请检查环境配置。`
+- 模型与思考水平切换失败，用户侧报告为设置失败 / HTTP500
+
+### 影响范围
+
+- Tauri 发布态启动链路
+- Pi RPC 会话链路
+- 模型切换
+- 思考水平切换
+- `Pi Login` 与 diagnostics
+
+### 根因
+
+- “能打包成功”不等于“运行时资源已经完整进入 `.app`”
+- 本次问题至少暴露出两类发布态前提没有被显式验证：
+  - bundle 内缺少 `app/frontend/assets`，导致后端 setup 直接失败
+  - bundle / 托管安装 / PATH 三条路径都没有提供可用 `pi`，导致 RPC 主链路失效
+- 模型与思考水平切换并不是独立问题；它本质上依赖同一条 Pi RPC 链路，因此会跟着一起失败
+
+### 修复
+
+- `scripts/desktop-build.mjs` 在 Tauri build 结束后，强制同步 `app/`、`backend-runtime/`、`pi-runtime/`、`knowledge-base/` 到最终 `.app`
+- 新增专项文档：
+  - [desktop-packaging-regressions.md](desktop-packaging-regressions.md)
+- 后续发包必须按专项文档里的 bundle 完整性、启动冒烟、RPC 冒烟、干净机器验证清单执行
+
+### 验证建议
+
+1. `open` 打包后的 `.app`
+2. 检查启动日志中是否出现 `setup: backend launched` 与 `setup: main window built`
+3. 打开 diagnostics，确认 `pi` 来源存在
+4. 创建真实会话并发送消息
+5. 切换模型与思考水平，确认刷新后仍正确
+
+> 详细复盘与后续发包清单见 [desktop-packaging-regressions.md](desktop-packaging-regressions.md)。
 
 ## 2026-04-16：重开 app 后，“思考过程”恢复成零散短句
 

@@ -28,6 +28,7 @@ from .config import (
     get_pi_workdir,
 )
 from .pi_rpc_client import PiRpcClient, PiRpcError
+from .security_service import get_pi_security_extension_args
 
 
 logger = logging.getLogger(__name__)
@@ -38,10 +39,11 @@ PI_INTERRUPTED_USER_MESSAGE = "Pi 回复异常中断，本次请求已自动停�
 REGISTRY_FILENAME = "gogo-session-registry.json"
 APP_TURNS_DIRNAME = "gogo-session-turns"
 APP_TURNS_TAIL_READ_CHUNK_SIZE = 64 * 1024
+EXTENSION_UI_DEFAULT_TIMEOUT_SECONDS = 300
 
 
 def _pi_rpc_extra_args(*args: str) -> list[str]:
-    return [*args, *get_pi_extension_args()]
+    return [*args, *get_pi_extension_args(), *get_pi_security_extension_args()]
 
 
 def _run_coro_sync(coro):
@@ -106,6 +108,8 @@ class SessionProcess:
     abort_requested: bool = False
     active_rpc_client: PiRpcClient | None = None
     active_loop: asyncio.AbstractEventLoop | None = None
+    active_extension_ui_request: dict[str, Any] | None = None
+    active_extension_ui_waiter: asyncio.Future[bool] | None = None
 
     def __post_init__(self) -> None:
         self.info.session_id = self.session_id
@@ -996,20 +1000,24 @@ class SessionPool:
             return trace_item
         if event_type == "tool_execution_end" and bool(event.get("isError")):
             tool_name = str(event.get("toolName") or "unknown")
-            detail = self._short_trace_text(
+            raw_detail = self._stringify_rpc_error_detail(
                 event.get("error")
                 or event.get("errorMessage")
                 or event.get("result")
                 or "Pi RPC reported a tool execution error.",
-                max_length=220,
+                max_length=4000,
             )
-            return {
+            is_security_block, clean_detail, security_payload = self._parse_security_reason(raw_detail)
+            trace_item = {
                 "kind": "status",
-                "title": f"工具出错：{tool_name}",
-                "detail": detail,
+                "title": f"{'安全限制已阻止' if is_security_block else '工具出错'}：{tool_name}",
+                "detail": self._short_trace_text(clean_detail or raw_detail, max_length=220),
                 "action": "status",
                 "event_type": event_type,
             }
+            if is_security_block and security_payload:
+                trace_item["security"] = security_payload
+            return trace_item
         if event_type == "extension_error":
             return {
                 "kind": "status",
@@ -1026,14 +1034,44 @@ class SessionPool:
         if isinstance(value, (int, float, bool)):
             return str(value)
         if isinstance(value, dict):
-            for key in ("message", "errorMessage", "finalError", "reason", "type"):
+            for key in ("message", "errorMessage", "finalError", "reason", "text", "value"):
                 nested = self._stringify_rpc_error_detail(value.get(key), max_length=max_length)
                 if nested:
                     return nested
+            content = value.get("content")
+            nested_content = self._stringify_rpc_error_detail(content, max_length=max_length)
+            if nested_content:
+                return nested_content
             return self._short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
         if isinstance(value, list) and value:
+            for item in reversed(value):
+                nested = self._stringify_rpc_error_detail(item, max_length=max_length)
+                if nested:
+                    return nested
             return self._short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
         return ""
+
+    def _parse_security_reason(self, detail: str) -> tuple[bool, str, dict[str, Any] | None]:
+        normalized = str(detail or "").strip()
+        prefix = "[gogo-security]"
+        if not normalized.startswith(prefix):
+            return False, normalized, None
+
+        payload_text = normalized[len(prefix) :].strip()
+        if not payload_text:
+            return True, "", None
+        try:
+            payload = json.loads(payload_text)
+        except json.JSONDecodeError:
+            return True, payload_text, None
+
+        if not isinstance(payload, dict):
+            return True, str(payload), None
+
+        message = str(payload.get("message") or payload.get("reason") or "").strip()
+        if not message:
+            message = payload_text
+        return True, message, payload
 
     def _extract_rpc_error_detail_from_message(self, message: Any) -> str:
         if not isinstance(message, dict):
@@ -1115,6 +1153,49 @@ class SessionPool:
             "stopped": True,
         }
 
+    def _extension_ui_timeout_seconds(self, request: dict[str, Any]) -> float:
+        raw_timeout = request.get("timeout") if isinstance(request, dict) else None
+        try:
+            timeout_ms = int(raw_timeout)
+        except (TypeError, ValueError):
+            timeout_ms = 0
+        if timeout_ms > 0:
+            return max(1.0, timeout_ms / 1000)
+        return float(EXTENSION_UI_DEFAULT_TIMEOUT_SECONDS)
+
+    def _begin_extension_ui_wait(
+        self,
+        session: SessionProcess,
+        request: dict[str, Any],
+    ) -> asyncio.Future[bool]:
+        loop = asyncio.get_running_loop()
+        waiter: asyncio.Future[bool] = loop.create_future()
+        stale_waiter: asyncio.Future[bool] | None = None
+        with self._lock:
+            stale_waiter = session.active_extension_ui_waiter
+            session.active_extension_ui_request = dict(request)
+            session.active_extension_ui_waiter = waiter
+        if stale_waiter is not None and not stale_waiter.done():
+            stale_waiter.set_result(False)
+        return waiter
+
+    def _clear_extension_ui_wait(
+        self,
+        session: SessionProcess,
+        *,
+        request_id: str | None = None,
+    ) -> tuple[dict[str, Any] | None, asyncio.Future[bool] | None]:
+        with self._lock:
+            active_request = session.active_extension_ui_request
+            if request_id:
+                active_id = str(active_request.get("id") or "").strip() if isinstance(active_request, dict) else ""
+                if active_id != str(request_id).strip():
+                    return None, None
+            waiter = session.active_extension_ui_waiter
+            session.active_extension_ui_request = None
+            session.active_extension_ui_waiter = None
+        return active_request, waiter
+
     def abort_pending_request(self, session_id: str) -> dict[str, Any]:
         with self._lock:
             session = self._sessions.get(session_id)
@@ -1135,11 +1216,24 @@ class SessionPool:
             request_id = session.info.pending_request_id
             rpc_client = session.active_rpc_client
             active_loop = session.active_loop
+            pending_ui_request = dict(session.active_extension_ui_request or {})
+            pending_ui_waiter = session.active_extension_ui_waiter
+            if pending_ui_request:
+                session.active_extension_ui_request = None
+                session.active_extension_ui_waiter = None
 
         if rpc_client is not None and active_loop is not None and active_loop.is_running():
             def schedule_abort() -> None:
                 async def run_abort() -> None:
                     try:
+                        ui_request_id = str(pending_ui_request.get("id") or "").strip()
+                        if ui_request_id:
+                            await rpc_client.send_extension_ui_response(
+                                ui_request_id=ui_request_id,
+                                cancelled=True,
+                            )
+                            if pending_ui_waiter is not None and not pending_ui_waiter.done():
+                                pending_ui_waiter.set_result(False)
                         await rpc_client.abort(
                             request_id=f"{request_id}:user_abort" if request_id else None
                         )
@@ -1154,6 +1248,84 @@ class SessionPool:
             "success": True,
             "session_id": session_id,
             "detail": "已请求终止当前回复。",
+        }
+
+    def respond_extension_ui_request(self, session_id: str, payload: dict[str, Any] | None = None) -> dict[str, Any]:
+        payload = payload if isinstance(payload, dict) else {}
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "detail": f"Session not found: {session_id}",
+                }
+            active_request = dict(session.active_extension_ui_request or {})
+            waiter = session.active_extension_ui_waiter
+            rpc_client = session.active_rpc_client
+            active_loop = session.active_loop
+
+        request_id = str(payload.get("id") or "").strip()
+        active_request_id = str(active_request.get("id") or "").strip()
+        if not active_request_id:
+            return {
+                "success": False,
+                "session_id": session_id,
+                "detail": "当前会话没有等待中的 Pi 交互请求。",
+            }
+        if request_id != active_request_id:
+            return {
+                "success": False,
+                "session_id": session_id,
+                "detail": f"当前等待中的 Pi 交互请求是 {active_request_id}，不是 {request_id or '(empty)'}。",
+            }
+        if rpc_client is None or active_loop is None or not active_loop.is_running():
+            return {
+                "success": False,
+                "session_id": session_id,
+                "detail": "当前会话的 Pi RPC 连接已失效，无法继续交互。",
+            }
+
+        response_kwargs: dict[str, Any] = {
+            "ui_request_id": request_id,
+            "cancelled": bool(payload.get("cancelled")),
+        }
+        if not response_kwargs["cancelled"]:
+            if payload.get("value") is not None:
+                response_kwargs["value"] = str(payload.get("value") or "")
+            elif payload.get("confirmed") is not None:
+                response_kwargs["confirmed"] = bool(payload.get("confirmed"))
+            else:
+                return {
+                    "success": False,
+                    "session_id": session_id,
+                    "detail": "Pi 交互响应缺少 value / confirmed / cancelled。",
+                }
+
+        async def run_response() -> None:
+            await rpc_client.send_extension_ui_response(**response_kwargs)
+
+        try:
+            future = asyncio.run_coroutine_threadsafe(run_response(), active_loop)
+            future.result(timeout=10)
+        except Exception as exc:
+            logger.warning("Failed to send extension UI response", exc_info=True)
+            return {
+                "success": False,
+                "session_id": session_id,
+                "detail": f"发送 Pi 交互响应失败：{exc}",
+            }
+
+        cleared_request, _ = self._clear_extension_ui_wait(session, request_id=request_id)
+        if waiter is not None:
+            active_loop.call_soon_threadsafe(
+                lambda: None if waiter.done() else waiter.set_result(True)
+            )
+        return {
+            "success": True,
+            "session_id": session_id,
+            "detail": "已把交互结果发回给当前 Pi 请求。",
+            "request": cleared_request or active_request,
         }
 
     async def _stream_rpc_request(
@@ -1174,6 +1346,8 @@ class SessionPool:
         session.abort_requested = False
         session.active_rpc_client = None
         session.active_loop = asyncio.get_running_loop()
+        session.active_extension_ui_request = None
+        session.active_extension_ui_waiter = None
         session.info.pending_request_id = request_id or f"pending-{uuid.uuid4()}"
         session.info.last_used_at = time.time()
         self._sync_registry_from_session(session)
@@ -1307,6 +1481,41 @@ class SessionPool:
                             return
                         continue
 
+                    if event_type == "extension_ui_request":
+                        flush_pending_thinking()
+                        ui_request = rpc_event if isinstance(rpc_event, dict) else {}
+                        ui_waiter = self._begin_extension_ui_wait(session, ui_request)
+                        yield {
+                            "type": "extension_ui_request",
+                            "session_id": session.session_id,
+                            "request": ui_request,
+                        }
+                        timeout_seconds = self._extension_ui_timeout_seconds(ui_request)
+                        try:
+                            await asyncio.wait_for(asyncio.shield(ui_waiter), timeout=timeout_seconds)
+                        except asyncio.TimeoutError:
+                            ui_request_id = str(ui_request.get("id") or "").strip()
+                            if ui_request_id:
+                                logger.info(
+                                    "Extension UI request timed out; auto-cancelling pending dialog: session=%s request=%s",
+                                    session.session_id,
+                                    ui_request_id,
+                                )
+                                try:
+                                    await rpc_client.send_extension_ui_response(
+                                        ui_request_id=ui_request_id,
+                                        cancelled=True,
+                                    )
+                                except Exception:
+                                    logger.warning("Failed to auto-cancel extension UI request", exc_info=True)
+                            _, pending_waiter = self._clear_extension_ui_wait(
+                                session,
+                                request_id=ui_request_id,
+                            )
+                            if pending_waiter is not None and not pending_waiter.done():
+                                pending_waiter.set_result(False)
+                        continue
+
                     if event_type in {"message_end", "turn_end"}:
                         snapshot_text = self._extract_assistant_text_from_message(
                             rpc_event.get("message")
@@ -1421,6 +1630,11 @@ class SessionPool:
             session.abort_requested = False
             session.active_rpc_client = None
             session.active_loop = None
+            session.active_extension_ui_request = None
+            waiter = session.active_extension_ui_waiter
+            session.active_extension_ui_waiter = None
+            if waiter is not None and not waiter.done():
+                waiter.set_result(False)
             session.info.pending_request_id = None
             session.info.last_used_at = time.time()
             session.info.message_count += 1

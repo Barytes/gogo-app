@@ -1,6 +1,6 @@
 # Frontend Workbench Elements
 
-**最后更新**: 2026-04-16
+**最后更新**: 2026-04-18
 
 > 本文档说明 `gogo-app` 前端页面中各个主要元素的职责、状态来源与实现位置。  
 > 目标不是解释后端 RPC，而是回答“页面上这个区域/按钮是干什么的、由谁实现、和谁联动”。
@@ -180,15 +180,23 @@
 
 主要元素：
 
+- `#security-mode-select`
+- `#save-security-settings-button`
+- `#open-security-log-button`
 - `#refresh-diagnostics-button`
 - `#diagnostics-status-chips`
 - `#diagnostics-kb-list`
 - `#diagnostics-pi-list`
 - `#diagnostics-session-list`
 - `#diagnostics-provider-list`
+- `#diagnostics-security-list`
+- `#diagnostics-security-events`
 
 功能：
 
+- 切换 Pi 安全模式（只读 / 允许写文件 / 允许执行命令）
+- 展示当前受信任工作区、托管安全 extension 路径和安全日志路径
+- 展示最近的 `bash / write / edit` allow / block 审计记录
 - 展示知识库名称、路径和 `wiki/raw/inbox` 目录状态
 - 展示 session namespace、session 目录、活跃会话数
 - 展示 Pi 命令、命令路径、超时、工作目录、当前模型/思考
@@ -197,6 +205,7 @@
 数据来源：
 
 - `GET /api/settings/diagnostics`
+- `PATCH /api/settings/security`
 
 ## 5. Wiki 区域元素
 
@@ -317,6 +326,7 @@
 - 指向 Wiki 的内部链接直接打开右侧 Wiki 面板
 - 裸文本或行内代码形式的 `wiki/...md` 自动转链接
 - trace 中展示具体读取文件、搜索关键词、bash 命令摘要，而不只显示工具名
+- 若 trace 表示“安全限制已阻止”，聊天区会弹出安全确认弹窗，显示命令/路径、是否可单次放行，以及把“禁止理由”直接继续 steer 给当前 Pi 会话
 
 ### 6.6 `#chat-input`
 
@@ -346,8 +356,18 @@
 - `#chat-model-button`
 - `#chat-thinking-button`
 - `#chat-slash-button`
+- `#chat-security-button`
 - `#chat-settings-hint`
 - `#chat-slash-panel`
+
+当前行为补充：
+
+- 安全模式入口已从 diagnostics 挪到聊天输入框按钮行，放在 `context window` 按钮旁边
+- 安全模式菜单与模型 / 思考水平菜单共用同一套 `chat-control-button + chat-control-menu` 尺寸和交互
+- 当 Pi 在当前模式下触发 `bash / write / edit` 阻断时，会拉起 `#chat-security-modal`
+- 用户可以：
+  - `允许这一次`：通过后端创建一次性审批，并在同一会话里要求 Pi 只重试这一个已批准操作
+  - `禁止并告知 Pi`：输入理由后，前端会先终止当前回复，再把这段约束作为新的 user turn 继续推进任务
 
 功能：
 

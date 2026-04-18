@@ -16,6 +16,12 @@ const pyinstallerBuildRoot = path.resolve(
 );
 const specRoot = path.join(pyinstallerBuildRoot, "spec");
 const workRoot = path.join(pyinstallerBuildRoot, "work");
+const bundleRoot = path.join(appRoot, "src-tauri", "target", "release", "bundle");
+const macosBundleDir = path.join(bundleRoot, "macos");
+const dmgBundleDir = path.join(bundleRoot, "dmg");
+const appSourceDir = path.join(appRoot, "app");
+const knowledgeBaseSourceDir = path.resolve(appRoot, "..", "knowledge-base");
+const bundledPiRuntimeRoot = path.resolve(appRoot, "..", "pi-runtime");
 const uvCacheDir = path.resolve(process.env.GOGO_DESKTOP_UV_CACHE_DIR || path.join(appRoot, ".cache", "uv"));
 const pyinstallerConfigDir = path.resolve(
   process.env.GOGO_DESKTOP_PYINSTALLER_CONFIG_DIR || path.join(appRoot, ".cache", "pyinstaller"),
@@ -33,6 +39,40 @@ const PI_RUNTIME_INCLUDE = new Set([
 
 function log(message) {
   console.log(`[gogo-desktop-build] ${message}`);
+}
+
+function defaultBundledPiSourceCandidates() {
+  if (process.platform === "darwin") {
+    const candidates = [];
+    if (process.arch === "arm64") {
+      candidates.push(
+        path.join(bundledPiRuntimeRoot, "macos-arm64", "pi"),
+        path.join(bundledPiRuntimeRoot, "macos-arm64"),
+      );
+    }
+    if (process.arch === "x64") {
+      candidates.push(
+        path.join(bundledPiRuntimeRoot, "macos-x64", "pi"),
+        path.join(bundledPiRuntimeRoot, "macos-x64"),
+      );
+    }
+    candidates.push(
+      path.join(bundledPiRuntimeRoot, "macos", "pi"),
+      path.join(bundledPiRuntimeRoot, "macos"),
+    );
+    return candidates;
+  }
+
+  if (process.platform === "win32") {
+    return [
+      path.join(bundledPiRuntimeRoot, "windows-x64", "pi.exe"),
+      path.join(bundledPiRuntimeRoot, "windows-x64"),
+      path.join(bundledPiRuntimeRoot, "windows", "pi.exe"),
+      path.join(bundledPiRuntimeRoot, "windows"),
+    ];
+  }
+
+  return [];
 }
 
 function tauriCommand() {
@@ -106,6 +146,25 @@ function spawnChecked(command, args, options = {}) {
   });
 }
 
+async function resolveBundledPiSourcePath() {
+  const configuredPath = String(process.env.GOGO_DESKTOP_PI_BINARY || "").trim();
+  if (configuredPath) {
+    return path.resolve(configuredPath);
+  }
+
+  const defaultCandidate = await firstExisting(defaultBundledPiSourceCandidates());
+  if (defaultCandidate) {
+    log(`using default bundled pi runtime from ${defaultCandidate}`);
+    return defaultCandidate;
+  }
+
+  const expectedPaths = defaultBundledPiSourceCandidates();
+  const helpText = expectedPaths.length
+    ? `Expected one of: ${expectedPaths.join(", ")}`
+    : "Set GOGO_DESKTOP_PI_BINARY to a valid pi runtime launcher or directory.";
+  throw new Error(`bundled pi runtime is required for desktop builds. ${helpText}`);
+}
+
 async function buildBackendRuntime() {
   await Promise.all([
     ensureDir(distRoot),
@@ -163,13 +222,7 @@ async function buildBackendRuntime() {
 async function stageBundledPiRuntime() {
   await clearDirectory(piDistDir, { keep: [".gitkeep"] });
 
-  const configuredPath = String(process.env.GOGO_DESKTOP_PI_BINARY || "").trim();
-  if (!configuredPath) {
-    log("no bundled pi runtime configured; fallback install path remains enabled");
-    return;
-  }
-
-  const sourcePath = path.resolve(configuredPath);
+  const sourcePath = await resolveBundledPiSourcePath();
   let sourceStat;
   try {
     sourceStat = await fs.stat(sourcePath);
@@ -206,6 +259,118 @@ async function runTauriBuild(extraArgs) {
   });
 }
 
+async function findBuiltAppBundle() {
+  try {
+    const entries = await fs.readdir(macosBundleDir, { withFileTypes: true });
+    const appEntry = entries.find((entry) => entry.isDirectory() && entry.name.endsWith(".app"));
+    return appEntry ? path.join(macosBundleDir, appEntry.name) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function findBuiltDmg() {
+  try {
+    const entries = await fs.readdir(dmgBundleDir, { withFileTypes: true });
+    const dmgEntry = entries.find((entry) => entry.isFile() && entry.name.endsWith(".dmg"));
+    return dmgEntry ? path.join(dmgBundleDir, dmgEntry.name) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function syncDirectoryIfPresent(sourceDir, targetDir) {
+  try {
+    await fs.access(sourceDir);
+  } catch {
+    return false;
+  }
+
+  await fs.rm(targetDir, { recursive: true, force: true });
+  await fs.cp(sourceDir, targetDir, {
+    recursive: true,
+    force: true,
+  });
+  return true;
+}
+
+async function syncBundleRuntimeResources(appBundlePath) {
+  const resourcesDir = path.join(appBundlePath, "Contents", "Resources");
+  const bundledAppDir = path.join(resourcesDir, "app");
+  const bundledBackendDir = path.join(resourcesDir, "backend-runtime");
+  const bundledPiDir = path.join(resourcesDir, "pi-runtime");
+  const bundledKnowledgeBaseDir = path.join(resourcesDir, "knowledge-base");
+
+  const syncedAppDir = await syncDirectoryIfPresent(appSourceDir, bundledAppDir);
+  if (!syncedAppDir) {
+    throw new Error(`app resources source directory is missing: ${appSourceDir}`);
+  }
+
+  await fs.rm(bundledBackendDir, { recursive: true, force: true });
+  await fs.cp(backendDistDir, bundledBackendDir, {
+    recursive: true,
+    force: true,
+  });
+
+  const stagedPiLauncher = await firstExisting(piLauncherCandidates(piDistDir));
+  if (stagedPiLauncher) {
+    await fs.rm(bundledPiDir, { recursive: true, force: true });
+    await fs.cp(piDistDir, bundledPiDir, {
+      recursive: true,
+      force: true,
+    });
+  }
+
+  const syncedKnowledgeBaseDir = await syncDirectoryIfPresent(knowledgeBaseSourceDir, bundledKnowledgeBaseDir);
+  if (!syncedKnowledgeBaseDir) {
+    log(`knowledge-base source directory not found; keeping existing bundle contents at ${bundledKnowledgeBaseDir}`);
+  }
+
+  const bundledBackendExecutable = await firstExisting(backendExecutableCandidates(bundledBackendDir));
+  if (!bundledBackendExecutable) {
+    throw new Error(`bundled app is missing backend executable after sync: ${bundledBackendDir}`);
+  }
+
+  const bundledFrontendAssetsDir = path.join(bundledAppDir, "frontend", "assets");
+  try {
+    await fs.access(bundledFrontendAssetsDir);
+  } catch {
+    throw new Error(`bundled app is missing frontend assets after sync: ${bundledFrontendAssetsDir}`);
+  }
+
+  log(`synced runtime resources into ${appBundlePath}`);
+}
+
+async function rebuildDmgFromApp(appBundlePath) {
+  const dmgPath = await findBuiltDmg();
+  if (!dmgPath) {
+    log("no dmg artifact found after tauri build; skipping dmg rebuild");
+    return;
+  }
+
+  const volumeName = path.basename(appBundlePath, ".app");
+  await fs.rm(dmgPath, { force: true });
+  await spawnChecked(
+    "hdiutil",
+    [
+      "create",
+      "-volname",
+      volumeName,
+      "-srcfolder",
+      appBundlePath,
+      "-ov",
+      "-format",
+      "UDZO",
+      dmgPath,
+    ],
+    {
+      env: process.env,
+    },
+  );
+
+  log(`rebuilt dmg artifact at ${dmgPath}`);
+}
+
 async function main() {
   const args = process.argv.slice(2);
   const requestedCommand = args[0];
@@ -226,6 +391,14 @@ async function main() {
   await buildBackendRuntime();
   await stageBundledPiRuntime();
   await runTauriBuild(tailArgs);
+
+  const appBundlePath = await findBuiltAppBundle();
+  if (!appBundlePath) {
+    throw new Error("tauri build completed but no .app bundle was found");
+  }
+
+  await syncBundleRuntimeResources(appBundlePath);
+  await rebuildDmgFromApp(appBundlePath);
 }
 
 main().catch((error) => {

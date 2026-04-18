@@ -99,9 +99,16 @@ const diagnosticsKbListEl = document.querySelector("#diagnostics-kb-list");
 const diagnosticsPiListEl = document.querySelector("#diagnostics-pi-list");
 const diagnosticsSessionListEl = document.querySelector("#diagnostics-session-list");
 const diagnosticsProviderListEl = document.querySelector("#diagnostics-provider-list");
+const diagnosticsSecurityListEl = document.querySelector("#diagnostics-security-list");
+const diagnosticsSecurityEventsEl = document.querySelector("#diagnostics-security-events");
 const openDiagnosticsKbButtonEl = document.querySelector("#open-diagnostics-kb-button");
 const openDiagnosticsLogButtonEl = document.querySelector("#open-diagnostics-log-button");
 const exportDiagnosticsSummaryButtonEl = document.querySelector("#export-diagnostics-summary-button");
+const securityModeSelectEl = document.querySelector("#security-mode-select");
+const securityModeHelpEl = document.querySelector("#security-mode-help");
+const saveSecuritySettingsButtonEl = document.querySelector("#save-security-settings-button");
+const openSecurityLogButtonEl = document.querySelector("#open-security-log-button");
+const securitySettingsFeedbackEl = document.querySelector("#security-settings-feedback");
 
 const STORAGE_KEY = "research-kb-workbench-layout";
 const DESKTOP_PI_LOGIN_POLL_INTERVAL_MS = 2500;
@@ -340,6 +347,10 @@ function setProviderFeedback(message, isError = false) {
 
 function setDiagnosticsFeedback(message, isError = false) {
   setFeedback(diagnosticsFeedbackEl, message, isError);
+}
+
+function setSecurityFeedback(message, isError = false) {
+  setFeedback(securitySettingsFeedbackEl, message, isError);
 }
 
 function setCapabilityFeedback(message, isError = false) {
@@ -949,6 +960,7 @@ function clearSettingsFeedback() {
   setCapabilityFeedback("");
   setProviderFeedback("");
   setDiagnosticsFeedback("");
+  setSecurityFeedback("");
 }
 
 function capabilityItems() {
@@ -1526,6 +1538,83 @@ function diagnosticsPiStatusLabel(runtime, install) {
   return "未就绪";
 }
 
+function securitySettings() {
+  return diagnosticsState.data?.security || {};
+}
+
+function diagnosticsSecurityEventLabel(item) {
+  if (!item || typeof item !== "object") {
+    return "";
+  }
+  const decision = String(item.decision || "").trim().toLowerCase() === "block" ? "BLOCK" : "ALLOW";
+  const tool = String(item.tool || "tool").trim() || "tool";
+  const target = String(item.command || item.resolvedPath || item.path || "").trim();
+  const reason = String(item.reason || "").trim();
+  const parts = [`${decision} ${tool}`];
+  if (target) {
+    parts.push(target);
+  } else if (reason) {
+    parts.push(reason);
+  }
+  return parts.join(" · ");
+}
+
+function renderSecurityControls() {
+  const security = securitySettings();
+  const availableModes = Array.isArray(security.available_modes) ? security.available_modes : [];
+
+  if (securityModeSelectEl) {
+    const previousValue = String(securityModeSelectEl.value || "").trim();
+    securityModeSelectEl.innerHTML = "";
+    availableModes.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.id || "";
+      option.textContent = item.label || item.id || "";
+      securityModeSelectEl.appendChild(option);
+    });
+    securityModeSelectEl.value = security.mode || previousValue || availableModes[0]?.id || "";
+  }
+
+  const selectedMode =
+    availableModes.find((item) => item.id === String(securityModeSelectEl?.value || security.mode || "")) ||
+    availableModes[0] ||
+    {};
+
+  if (securityModeHelpEl) {
+    const helpParts = [];
+    if (selectedMode.description) {
+      helpParts.push(selectedMode.description);
+    }
+    if (security.boundary_note) {
+      helpParts.push(security.boundary_note);
+    }
+    securityModeHelpEl.textContent =
+      helpParts.join(" ") || "当前是应用层最小安全约束，不是容器级强沙箱。";
+  }
+}
+
+function renderSecurityEvents(events) {
+  if (!diagnosticsSecurityEventsEl) {
+    return;
+  }
+  diagnosticsSecurityEventsEl.innerHTML = "";
+  const items = Array.isArray(events) ? events : [];
+  if (!items.length) {
+    const chip = document.createElement("span");
+    chip.className = "settings-chip";
+    chip.textContent = "最近还没有 bash / write / edit 审计记录";
+    diagnosticsSecurityEventsEl.appendChild(chip);
+    return;
+  }
+  items.forEach((item) => {
+    const chip = document.createElement("span");
+    chip.className = "settings-chip";
+    chip.textContent = diagnosticsSecurityEventLabel(item);
+    chip.title = String(item.reason || item.command || item.resolvedPath || item.path || "").trim();
+    diagnosticsSecurityEventsEl.appendChild(chip);
+  });
+}
+
 function renderDiagnostics() {
   const payload = diagnosticsState.data;
   const health = payload?.health || {};
@@ -1535,6 +1624,7 @@ function renderDiagnostics() {
   const defaults = providers.defaults || {};
   const piRuntime = payload?.pi_runtime || {};
   const piInstall = payload?.pi_install || piInstallStatus();
+  const security = payload?.security || {};
 
   if (diagnosticsStatusChipsEl) {
     diagnosticsStatusChipsEl.innerHTML = "";
@@ -1544,6 +1634,7 @@ function renderDiagnostics() {
       `Pi 状态：${health.runtime_options_ok ? "已连通" : "拉取失败"}`,
       `Pi 安装：${piInstall.install_in_progress ? "安装中" : piInstall.installed ? "已安装" : "待安装"}`,
       `知识库：${diagnosticsValue(knowledgeBase.name)}`,
+      `安全模式：${diagnosticsValue(security.mode_label)}`,
     ];
     chips.forEach((label) => {
       const chip = document.createElement("span");
@@ -1591,6 +1682,15 @@ function renderDiagnostics() {
     ["gogo 管理数", diagnosticsValue(providers.managed_count)],
     ["已连 OAuth", diagnosticsValue(providers.oauth_connected_count)],
   ]);
+  renderDiagnosticsList(diagnosticsSecurityListEl, [
+    ["安全模式", diagnosticsValue(security.mode_label)],
+    ["受信任工作区", diagnosticsValue(Array.isArray(security.trusted_workspaces) ? security.trusted_workspaces.map((item) => item.label || item.path).join(" | ") : "")],
+    ["工作区路径", diagnosticsValue(Array.isArray(security.trusted_workspaces) ? security.trusted_workspaces.map((item) => item.path).join(" | ") : "")],
+    ["托管扩展", diagnosticsValue(security.managed_extension_path)],
+    ["安全日志", diagnosticsValue(security.log_path)],
+  ]);
+  renderSecurityControls();
+  renderSecurityEvents(security.recent_events);
   renderDiagnosticsActions();
 }
 
@@ -1598,12 +1698,19 @@ function renderDiagnosticsActions() {
   const payload = diagnosticsState.data;
   const knowledgeBasePath = String(payload?.knowledge_base?.path || appSettings?.knowledge_base?.path || "").trim();
   const logPath = String(payload?.pi_install?.install_log_path || "").trim();
+  const securityLogPath = String(payload?.security?.log_path || "").trim();
 
   if (openDiagnosticsKbButtonEl) {
     openDiagnosticsKbButtonEl.disabled = !knowledgeBasePath;
   }
   if (openDiagnosticsLogButtonEl) {
     openDiagnosticsLogButtonEl.disabled = !logPath;
+  }
+  if (saveSecuritySettingsButtonEl) {
+    saveSecuritySettingsButtonEl.disabled = diagnosticsState.loading || !securityModeSelectEl;
+  }
+  if (openSecurityLogButtonEl) {
+    openSecurityLogButtonEl.disabled = !securityLogPath;
   }
   if (exportDiagnosticsSummaryButtonEl) {
     exportDiagnosticsSummaryButtonEl.disabled = diagnosticsState.loading || !payload;
@@ -2372,6 +2479,7 @@ function buildDiagnosticsSummary() {
   const piInstall = payload.pi_install || {};
   const providers = payload.providers || {};
   const defaults = providers.defaults || {};
+  const security = payload.security || {};
   return [
     `生成时间: ${diagnosticsValue(payload.generated_at)}`,
     "",
@@ -2399,6 +2507,12 @@ function buildDiagnosticsSummary() {
     `默认模型: ${diagnosticsValue(defaults.model)}`,
     `Profile 数: ${diagnosticsValue(providers.profile_count)}`,
     `OAuth 已连通: ${diagnosticsValue(providers.oauth_connected_count)}`,
+    "",
+    `[安全]`,
+    `安全模式: ${diagnosticsValue(security.mode_label || security.mode)}`,
+    `受信任工作区: ${diagnosticsValue(Array.isArray(security.trusted_workspaces) ? security.trusted_workspaces.map((item) => item.path).join(" | ") : "")}`,
+    `安全日志: ${diagnosticsValue(security.log_path)}`,
+    `说明: ${diagnosticsValue(security.boundary_note)}`,
   ].join("\n");
 }
 
@@ -2438,6 +2552,37 @@ async function exportDiagnosticsSummary() {
   downloadTextFile(`gogo-diagnostics-${timestamp}.txt`, text);
   setDiagnosticsFeedback("");
   showSettingsToast("诊断摘要已导出到本地下载目录。");
+}
+
+async function saveSecuritySettings() {
+  const mode = String(securityModeSelectEl?.value || "").trim();
+  if (!mode) {
+    setSecurityFeedback("请选择一个安全模式。", true);
+    return;
+  }
+  if (saveSecuritySettingsButtonEl) {
+    saveSecuritySettingsButtonEl.disabled = true;
+  }
+  setSecurityFeedback("正在保存 Pi 安全模式...");
+  try {
+    const response = await fetch("/api/settings/security", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    setSecurityFeedback(payload?.detail || "Pi 安全模式已更新。");
+    await loadDiagnostics(true);
+  } catch (error) {
+    setSecurityFeedback(`保存失败：${error.message}`, true);
+  } finally {
+    renderDiagnosticsActions();
+  }
 }
 
 function cancelDesktopPiLoginPolling() {
@@ -2876,6 +3021,21 @@ openDiagnosticsLogButtonEl?.addEventListener("click", async () => {
     setDiagnosticsFeedback("");
   } catch (error) {
     setDiagnosticsFeedback(`打开失败：${error.message}`, true);
+  }
+});
+securityModeSelectEl?.addEventListener("change", () => {
+  renderSecurityControls();
+  setSecurityFeedback("");
+});
+saveSecuritySettingsButtonEl?.addEventListener("click", async () => {
+  await saveSecuritySettings();
+});
+openSecurityLogButtonEl?.addEventListener("click", async () => {
+  try {
+    await openDesktopPath(diagnosticsState.data?.security?.log_path || "", "安全日志");
+    setSecurityFeedback("");
+  } catch (error) {
+    setSecurityFeedback(`打开失败：${error.message}`, true);
   }
 });
 exportDiagnosticsSummaryButtonEl?.addEventListener("click", async () => {

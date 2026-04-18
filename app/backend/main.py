@@ -48,6 +48,7 @@ from .raw_service import (
     list_raw_files,
     search_raw_files,
 )
+from .security_service import create_pi_security_approval, get_pi_security_settings, update_pi_security_settings
 from .skill_service import create_capability_file, delete_capability_file, get_capability_file, list_capability_entries, list_slash_commands, save_capability_file
 from .wiki_service import get_page, get_tree, list_pages, save_page, search_pages
 from .session_manager import (
@@ -253,6 +254,7 @@ def _build_settings_diagnostics() -> dict[str, object]:
     kb_settings = get_knowledge_base_settings()
     agent_status = get_agent_backend_status()
     provider_settings = get_model_provider_settings()
+    security_settings = get_pi_security_settings()
     pi_install = _get_pi_install_status()
     session_dir = get_pi_rpc_session_dir()
     extension_paths = [str(path) for path in get_pi_extension_paths()]
@@ -311,6 +313,7 @@ def _build_settings_diagnostics() -> dict[str, object]:
             "defaults": provider_settings.get("defaults") or {},
             "extension_paths": extension_paths,
         },
+        "security": security_settings,
         "pi_runtime": {
             "command": agent_status.get("pi_command"),
             "command_path": agent_status.get("pi_command_path"),
@@ -384,6 +387,24 @@ class CompactSessionRequest(BaseModel):
 
 class UpdateKnowledgeBaseRequest(BaseModel):
     path: str = Field(..., min_length=1, description="本地知识库路径")
+
+
+class UpdatePiSecurityRequest(BaseModel):
+    mode: str = Field(..., description="安全模式：readonly / workspace-write / full-access")
+
+
+class CreatePiSecurityApprovalRequest(BaseModel):
+    tool_name: str = Field(..., description="工具名称：bash / write / edit")
+    command: str = Field(default="", description="需要单次放行的 bash 命令")
+    path: str = Field(default="", description="需要单次放行的原始路径")
+    resolved_path: str = Field(default="", description="前端已解析出的绝对路径")
+
+
+class ExtensionUiResponseRequest(BaseModel):
+    id: str = Field(..., min_length=1, description="Pi extension_ui_request 的 id")
+    value: str | None = Field(default=None, description="select / input / editor 的返回值")
+    confirmed: bool | None = Field(default=None, description="confirm 的布尔结果")
+    cancelled: bool = Field(default=False, description="是否取消当前交互")
 
 
 class UpsertModelProviderRequest(BaseModel):
@@ -668,6 +689,39 @@ def get_app_settings() -> dict[str, object]:
 @app.get("/api/settings/diagnostics")
 def get_settings_diagnostics() -> dict[str, object]:
     return _build_settings_diagnostics()
+
+
+@app.patch("/api/settings/security")
+def update_settings_security(request: UpdatePiSecurityRequest) -> dict[str, object]:
+    try:
+        security = update_pi_security_settings(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    reset_session_pool()
+    return {
+        "success": True,
+        "security": security,
+        "detail": "Pi 安全模式已更新；后续会话请求会按新规则重新启动。",
+    }
+
+
+@app.post("/api/settings/security/approval")
+def create_settings_security_approval(request: CreatePiSecurityApprovalRequest) -> dict[str, object]:
+    try:
+        approval = create_pi_security_approval(request.model_dump())
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return {
+        "success": True,
+        "approval": approval,
+        "detail": "已创建单次安全放行；Pi 下次命中同一操作时会自动消费。",
+    }
 
 
 @app.patch("/api/settings/knowledge-base")
@@ -1321,6 +1375,19 @@ def abort_session_response(session_id: str) -> dict[str, object]:
     result = pool.abort_pending_request(session_id)
     if not result.get("success"):
         detail = str(result.get("detail") or "Abort failed.")
+        if detail.startswith("Session not found:"):
+            raise HTTPException(status_code=404, detail=detail)
+        raise HTTPException(status_code=409, detail=detail)
+    return result
+
+
+@app.post("/api/sessions/{session_id}/extension-ui-response")
+def respond_session_extension_ui(session_id: str, request: ExtensionUiResponseRequest) -> dict[str, object]:
+    """把前端的 extension UI 结果回写给当前 Pi RPC 请求"""
+    pool = get_session_pool()
+    result = pool.respond_extension_ui_request(session_id, request.model_dump())
+    if not result.get("success"):
+        detail = str(result.get("detail") or "Extension UI response failed.")
         if detail.startswith("Session not found:"):
             raise HTTPException(status_code=404, detail=detail)
         raise HTTPException(status_code=409, detail=detail)

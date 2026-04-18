@@ -23,6 +23,8 @@ const modelButtonEl = document.querySelector("#chat-model-button");
 const modelMenuEl = document.querySelector("#chat-model-menu");
 const thinkingButtonEl = document.querySelector("#chat-thinking-button");
 const thinkingMenuEl = document.querySelector("#chat-thinking-menu");
+const securityButtonEl = document.querySelector("#chat-security-button");
+const securityMenuEl = document.querySelector("#chat-security-menu");
 const contextShellEl = document.querySelector("#chat-context-shell");
 const contextButtonEl = document.querySelector("#chat-context-button");
 const contextRingEl = document.querySelector("#chat-context-ring");
@@ -35,19 +37,31 @@ const slashButtonEl = document.querySelector("#chat-slash-button");
 const slashPanelEl = document.querySelector("#chat-slash-panel");
 const slashListEl = document.querySelector("#chat-slash-list");
 const settingsHintEl = document.querySelector("#chat-settings-hint");
+const securityModalEl = document.querySelector("#chat-security-modal");
+const securityModalTitleEl = document.querySelector("#chat-security-modal-title");
+const securityModalModeEl = document.querySelector("#chat-security-modal-mode");
+const securityModalApprovalEl = document.querySelector("#chat-security-modal-approval");
+const securityModalCommandEl = document.querySelector("#chat-security-modal-command");
+const securityModalReasonEl = document.querySelector("#chat-security-modal-reason");
+const securitySteerInputEl = document.querySelector("#chat-security-steer-input");
+const securityModalFeedbackEl = document.querySelector("#chat-security-modal-feedback");
+const securityApproveButtonEl = document.querySelector("#chat-security-approve-button");
+const securityDenyButtonEl = document.querySelector("#chat-security-deny-button");
+const securityCloseButtonEl = document.querySelector("#chat-security-close-button");
 const sessionListEl = document.querySelector("#session-list");
 const sessionListEmptyEl = document.querySelector("#session-list-empty");
 const newSessionButtonEl = document.querySelector("#new-session-button");
 const toggleSessionSidebarButtonEl = document.querySelector("#toggle-session-sidebar");
 const toggleSessionSidebarMainButtonEl = document.querySelector("#toggle-session-sidebar-main");
 const loadOlderButtonEl = document.querySelector("#chat-load-older-button");
-const CHAT_UI_VERSION = "2026-04-15.4";
+const CHAT_UI_VERSION = "2026-04-18.1";
 const SESSION_SIDEBAR_STORAGE_KEY = "gogo:session-sidebar-collapsed";
 const DRAFT_VIEW_KEY = "__draft__";
 const AUTO_SCROLL_BOTTOM_THRESHOLD_PX = 96;
 const SESSION_HISTORY_RENDER_BATCH_SIZE = 12;
 const SESSION_INITIAL_RENDER_LIMIT = 60;
 const SESSION_LOAD_OLDER_BATCH_SIZE = 60;
+const SECURITY_UI_TITLE_PREFIX = "__gogo_security_ui__:";
 const BARE_WIKI_PATH_PATTERN =
   /(^|[\s(>（【「『"'“”‘’,，。；：;:、])(wiki\/.+?\.md)(?=$|[\s)<\]】」』"'“”‘’,，。；：;:、!?！？])/g;
 
@@ -84,6 +98,11 @@ const THINKING_LEVEL_LABELS = {
   high: "高思考",
   xhigh: "超高思考",
 };
+const SECURITY_MODE_SHORT_LABELS = {
+  readonly: "只读",
+  "workspace-write": "写文件",
+  "full-access": "命令",
+};
 let shouldAutoScrollMessages = true;
 let syncingProgrammaticMessageScroll = false;
 let availableModels = [];
@@ -93,6 +112,14 @@ let draftChatSettings = {
   model_id: "",
   model_label: "默认模型",
   thinking_level: "medium",
+};
+let securitySettingsState = {
+  loading: false,
+  mode: "",
+  mode_label: "",
+  mode_description: "",
+  available_modes: [],
+  boundary_note: "",
 };
 let openChatControlMenu = null;
 let settingsHintTimer = null;
@@ -115,6 +142,10 @@ let questionAnchorsCache = [];
 let questionMarkerEls = [];
 let questionItemEls = [];
 const sessionHistoryHasOlder = new Map();
+const securityInterventionQueue = [];
+let activeSecurityIntervention = null;
+let securityDecisionSubmitting = false;
+const pendingSecurityDenyReasons = new Map();
 
 function clearChatQuestionPopoverHideTimer() {
   if (chatQuestionPopoverHideTimer) {
@@ -240,6 +271,15 @@ function currentModelButtonText() {
 function currentThinkingButtonText() {
   const settings = currentChatSettings();
   return THINKING_LEVEL_LABELS[settings.thinking_level] || settings.thinking_level || "思考水平";
+}
+
+function currentSecurityModeText() {
+  const mode = String(securitySettingsState.mode || "").trim();
+  if (!mode) {
+    return "安全模式";
+  }
+  const fallbackLabel = SECURITY_MODE_SHORT_LABELS[mode] || mode;
+  return `安全: ${fallbackLabel}`;
 }
 
 function currentModelRecord() {
@@ -437,6 +477,21 @@ function showSettingsHint(message) {
   }, 3200);
 }
 
+function setSecurityModalFeedback(message, isError = true) {
+  if (!securityModalFeedbackEl) {
+    return;
+  }
+  if (!message) {
+    securityModalFeedbackEl.textContent = "";
+    securityModalFeedbackEl.classList.add("hidden");
+    securityModalFeedbackEl.style.color = "";
+    return;
+  }
+  securityModalFeedbackEl.textContent = message;
+  securityModalFeedbackEl.classList.remove("hidden");
+  securityModalFeedbackEl.style.color = isError ? "#b1532f" : "#185c52";
+}
+
 function refreshSettingsHintState() {
   const settings = currentChatSettings();
   if (settings.thinking_level && !isThinkingLevelSupported(settings.thinking_level)) {
@@ -449,6 +504,90 @@ function refreshSettingsHintState() {
   if (settingsHintTimer) {
     window.clearTimeout(settingsHintTimer);
     settingsHintTimer = null;
+  }
+}
+
+function applySecuritySettingsState(security) {
+  const availableModes = Array.isArray(security?.available_modes)
+    ? security.available_modes
+        .filter((item) => item && typeof item === "object" && item.id)
+        .map((item) => ({
+          id: String(item.id || "").trim(),
+          label: String(item.label || item.id || "").trim(),
+          description: String(item.description || "").trim(),
+        }))
+    : securitySettingsState.available_modes;
+  const nextMode = String(security?.mode || securitySettingsState.mode || availableModes[0]?.id || "").trim();
+  const activeMode =
+    availableModes.find((item) => item.id === nextMode) ||
+    availableModes.find((item) => item.id === securitySettingsState.mode) ||
+    null;
+
+  securitySettingsState = {
+    ...securitySettingsState,
+    mode: nextMode,
+    mode_label: String(security?.mode_label || activeMode?.label || securitySettingsState.mode_label || "").trim(),
+    mode_description: String(
+      security?.mode_description || activeMode?.description || securitySettingsState.mode_description || ""
+    ).trim(),
+    available_modes: availableModes,
+    boundary_note: String(security?.boundary_note || securitySettingsState.boundary_note || "").trim(),
+  };
+}
+
+async function fetchSecuritySettings() {
+  const response = await fetch("/api/settings/diagnostics");
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
+  const payload = await response.json();
+  return payload?.security && typeof payload.security === "object" ? payload.security : {};
+}
+
+async function reloadSecuritySettings({ silent = false } = {}) {
+  securitySettingsState.loading = true;
+  refreshChatControls();
+  try {
+    const security = await fetchSecuritySettings();
+    applySecuritySettingsState(security);
+    refreshChatControls();
+    return security;
+  } catch (error) {
+    if (!silent) {
+      showSettingsHint(`加载安全模式失败：${error.message}`);
+    }
+    throw error;
+  } finally {
+    securitySettingsState.loading = false;
+    refreshChatControls();
+  }
+}
+
+async function applySecuritySelection(mode) {
+  const nextMode = String(mode || "").trim();
+  if (!nextMode || nextMode === securitySettingsState.mode) {
+    return;
+  }
+  try {
+    const response = await fetch("/api/settings/security", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        mode: nextMode,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(await extractErrorMessage(response));
+    }
+    const payload = await response.json();
+    applySecuritySettingsState(payload?.security || {});
+    refreshChatControls();
+    showSettingsHint(`安全模式已切到“${securitySettingsState.mode_label || nextMode}”。`);
+  } catch (error) {
+    console.error("Failed to switch security mode:", error);
+    showSettingsHint(`切换安全模式失败：${error.message}`);
   }
 }
 
@@ -1015,8 +1154,13 @@ function closeChatControlMenus() {
   openChatControlMenu = null;
   modelMenuEl?.classList.add("hidden");
   thinkingMenuEl?.classList.add("hidden");
+  securityMenuEl?.classList.add("hidden");
+  modelButtonEl?.parentElement?.classList.remove("is-open");
+  thinkingButtonEl?.parentElement?.classList.remove("is-open");
+  securityButtonEl?.parentElement?.classList.remove("is-open");
   modelButtonEl?.setAttribute("aria-expanded", "false");
   thinkingButtonEl?.setAttribute("aria-expanded", "false");
+  securityButtonEl?.setAttribute("aria-expanded", "false");
 }
 
 function renderChatControlMenus() {
@@ -1067,6 +1211,37 @@ function renderChatControlMenus() {
       thinkingMenuEl.appendChild(item);
     }
   }
+
+  if (securityMenuEl) {
+    securityMenuEl.innerHTML = "";
+    const modes = Array.isArray(securitySettingsState.available_modes) ? securitySettingsState.available_modes : [];
+    modes.forEach((mode) => {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className = "chat-control-menu-item";
+      if (mode.id === securitySettingsState.mode) {
+        item.classList.add("active");
+      }
+
+      const label = document.createElement("span");
+      label.className = "chat-control-menu-item-label";
+      label.textContent = mode.label;
+      item.appendChild(label);
+
+      if (mode.description) {
+        const detail = document.createElement("span");
+        detail.className = "chat-control-menu-item-detail";
+        detail.textContent = mode.description;
+        item.appendChild(detail);
+      }
+
+      item.addEventListener("click", async () => {
+        closeChatControlMenus();
+        await applySecuritySelection(mode.id);
+      });
+      securityMenuEl.appendChild(item);
+    });
+  }
 }
 
 function refreshChatControls() {
@@ -1086,6 +1261,23 @@ function refreshChatControls() {
     thinkingButtonEl.setAttribute("aria-label", `当前思考水平：${currentThinkingButtonText()}`);
     thinkingButtonEl.disabled = disabled || availableThinkingLevels.length === 0;
   }
+  if (securityButtonEl) {
+    const buttonText = currentSecurityModeText();
+    const modeDescription = securitySettingsState.mode_description || securitySettingsState.boundary_note || "切换当前 Pi 安全模式";
+    securityButtonEl.textContent = buttonText;
+    securityButtonEl.title = modeDescription;
+    securityButtonEl.setAttribute(
+      "aria-label",
+      securitySettingsState.mode_label
+        ? `当前安全模式：${securitySettingsState.mode_label}`
+        : "当前安全模式"
+    );
+    securityButtonEl.disabled =
+      disabled ||
+      securitySettingsState.loading ||
+      !Array.isArray(securitySettingsState.available_modes) ||
+      securitySettingsState.available_modes.length === 0;
+  }
   if (uploadButtonEl) {
     uploadButtonEl.disabled = disabled || isUploadingInboxFile;
   }
@@ -1100,10 +1292,357 @@ function toggleChatControlMenu(name) {
   openChatControlMenu = nextMenu;
   modelMenuEl?.classList.toggle("hidden", nextMenu !== "model");
   thinkingMenuEl?.classList.toggle("hidden", nextMenu !== "thinking");
+  securityMenuEl?.classList.toggle("hidden", nextMenu !== "security");
+  modelButtonEl?.parentElement?.classList.toggle("is-open", nextMenu === "model");
+  thinkingButtonEl?.parentElement?.classList.toggle("is-open", nextMenu === "thinking");
+  securityButtonEl?.parentElement?.classList.toggle("is-open", nextMenu === "security");
   modelButtonEl?.setAttribute("aria-expanded", String(nextMenu === "model"));
   thinkingButtonEl?.setAttribute("aria-expanded", String(nextMenu === "thinking"));
+  securityButtonEl?.setAttribute("aria-expanded", String(nextMenu === "security"));
   if (nextMenu) {
     renderChatControlMenus();
+  }
+}
+
+function setSecurityDecisionSubmittingState(isSubmitting) {
+  securityDecisionSubmitting = Boolean(isSubmitting);
+  if (securityApproveButtonEl) {
+    securityApproveButtonEl.disabled =
+      securityDecisionSubmitting || !activeSecurityIntervention?.canRequestApproval;
+  }
+  if (securityDenyButtonEl) {
+    securityDenyButtonEl.disabled = securityDecisionSubmitting;
+  }
+  if (securityCloseButtonEl) {
+    securityCloseButtonEl.disabled = securityDecisionSubmitting;
+  }
+  if (securitySteerInputEl) {
+    securitySteerInputEl.disabled = securityDecisionSubmitting;
+  }
+}
+
+function parseSecurityUiDescriptor(rawTitle) {
+  const title = String(rawTitle || "").trim();
+  if (!title.startsWith(SECURITY_UI_TITLE_PREFIX)) {
+    return null;
+  }
+  const body = title.slice(SECURITY_UI_TITLE_PREFIX.length);
+  const separatorIndex = body.indexOf(":");
+  if (separatorIndex <= 0) {
+    return null;
+  }
+  const phase = body.slice(0, separatorIndex).trim();
+  const payloadText = body.slice(separatorIndex + 1).trim();
+  if (!phase || !payloadText) {
+    return null;
+  }
+  try {
+    const payload = JSON.parse(payloadText);
+    return payload && typeof payload === "object"
+      ? { phase, payload }
+      : null;
+  } catch (_error) {
+    return null;
+  }
+}
+
+function buildSecurityInterventionFromUiRequest(request, sessionId = "") {
+  if (!request || typeof request !== "object") {
+    return null;
+  }
+  const parsed = parseSecurityUiDescriptor(request.title);
+  if (!parsed) {
+    return null;
+  }
+  const payload = parsed.payload && typeof parsed.payload === "object" ? parsed.payload : {};
+  const toolName = String(payload.tool_name || "").trim().toLowerCase() || "tool";
+  const command = String(payload.command || "").trim();
+  const rawPath = String(payload.path || "").trim();
+  const resolvedPath = String(payload.resolved_path || payload.resolvedPath || "").trim();
+  const preview =
+    toolName === "bash"
+      ? (command || "Pi 准备执行一条 bash 命令。")
+      : (resolvedPath || rawPath || "Pi 准备修改一个文件。");
+  const canRequestApproval = parsed.phase === "decision";
+  const modeLabel = String(
+    payload.current_mode_label || securitySettingsState.mode_label || securitySettingsState.mode || "当前安全模式"
+  ).trim();
+  const reason = String(payload.message || "该操作已被安全限制阻止。").trim();
+  const requestId = String(request.id || "").trim();
+  if (!reason || !requestId) {
+    return null;
+  }
+
+  return {
+    id: `${String(sessionId || "").trim()}:${requestId}:${parsed.phase}`,
+    sessionId: String(sessionId || currentStreamingSessionId || currentSessionId || "").trim(),
+    requestId,
+    requestMethod: String(request.method || "").trim(),
+    phase: parsed.phase,
+    toolName,
+    command,
+    path: rawPath,
+    resolvedPath,
+    preview,
+    reason,
+    modeLabel,
+    canRequestApproval,
+    blockCategory: String(payload.block_category || "").trim(),
+  };
+}
+
+function renderSecurityInterventionModal() {
+  const intervention = activeSecurityIntervention;
+  const isDecisionPhase = intervention?.phase === "decision";
+  const canApprove = Boolean(isDecisionPhase && intervention?.canRequestApproval);
+  if (!intervention || !securityModalEl) {
+    securityModalEl?.classList.add("hidden");
+    securityModalEl?.setAttribute("aria-hidden", "true");
+    return;
+  }
+
+  if (securityModalTitleEl) {
+    securityModalTitleEl.textContent = isDecisionPhase
+      ? "这次操作被当前安全模式拦住了"
+      : "告诉 Pi 为什么不能这样做";
+  }
+  securityModalModeEl && (securityModalModeEl.textContent = intervention.modeLabel || "当前安全模式");
+  securityModalApprovalEl &&
+    (securityModalApprovalEl.textContent = canApprove ? "会放行当前这次调用" : "这次会保持禁止");
+  securityModalCommandEl && (securityModalCommandEl.textContent = intervention.preview || "—");
+  securityModalReasonEl && (securityModalReasonEl.textContent = intervention.reason || "—");
+  if (securitySteerInputEl) {
+    if (!securityDecisionSubmitting) {
+      securitySteerInputEl.value = "";
+    }
+  }
+  if (securityApproveButtonEl) {
+    securityApproveButtonEl.hidden = !canApprove;
+    securityApproveButtonEl.textContent = "允许这一次";
+    securityApproveButtonEl.disabled = !canApprove || securityDecisionSubmitting;
+  }
+  if (securityDenyButtonEl) {
+    securityDenyButtonEl.textContent = isDecisionPhase ? "禁止并告知 Pi" : "发送理由并保持禁止";
+  }
+  setSecurityModalFeedback("");
+  setSecurityDecisionSubmittingState(false);
+  securityModalEl.classList.remove("hidden");
+  securityModalEl.setAttribute("aria-hidden", "false");
+  window.setTimeout(() => {
+    if (canApprove) {
+      securityApproveButtonEl?.focus();
+      return;
+    }
+    securitySteerInputEl?.focus();
+  }, 0);
+}
+
+function openNextSecurityIntervention() {
+  if (activeSecurityIntervention || !securityInterventionQueue.length) {
+    return;
+  }
+  activeSecurityIntervention = securityInterventionQueue.shift() || null;
+  renderSecurityInterventionModal();
+}
+
+function discardQueuedSecurityInterventions(sessionId) {
+  if (!sessionId) {
+    return;
+  }
+  pendingSecurityDenyReasons.delete(sessionId);
+  for (let index = securityInterventionQueue.length - 1; index >= 0; index -= 1) {
+    if (securityInterventionQueue[index]?.sessionId === sessionId) {
+      securityInterventionQueue.splice(index, 1);
+    }
+  }
+}
+
+function closeActiveSecurityIntervention({ openNext = true } = {}) {
+  activeSecurityIntervention = null;
+  setSecurityModalFeedback("");
+  setSecurityDecisionSubmittingState(false);
+  securityModalEl?.classList.add("hidden");
+  securityModalEl?.setAttribute("aria-hidden", "true");
+  if (openNext) {
+    openNextSecurityIntervention();
+  }
+}
+
+function enqueueSecurityIntervention(request, sessionId = "") {
+  const intervention = buildSecurityInterventionFromUiRequest(request, sessionId);
+  if (!intervention) {
+    return;
+  }
+  const duplicated =
+    activeSecurityIntervention?.id === intervention.id ||
+    securityInterventionQueue.some((queued) => queued?.id === intervention.id);
+  if (duplicated) {
+    return;
+  }
+  securityInterventionQueue.push(intervention);
+  openNextSecurityIntervention();
+}
+
+async function sendSessionExtensionUiResponse(sessionId, payload) {
+  const targetSessionId = String(sessionId || "").trim();
+  if (!targetSessionId) {
+    throw new Error("缺少当前会话 ID，无法回写 Pi 交互结果。");
+  }
+  const response = await fetch(`/api/sessions/${encodeURIComponent(targetSessionId)}/extension-ui-response`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
+  return response.json();
+}
+
+async function handleIncomingExtensionUiRequest(request, sessionId = "") {
+  const targetSessionId = String(sessionId || currentStreamingSessionId || currentSessionId || "").trim();
+  const intervention = buildSecurityInterventionFromUiRequest(request, targetSessionId);
+  if (!intervention) {
+    if (targetSessionId && request?.id) {
+      try {
+        await sendSessionExtensionUiResponse(targetSessionId, {
+          id: String(request.id || "").trim(),
+          cancelled: true,
+        });
+      } catch (error) {
+        console.error("Failed to auto-cancel unsupported extension UI request:", error);
+      }
+    }
+    showSettingsHint("收到暂不支持的 Pi 交互请求，已自动取消。");
+    return;
+  }
+
+  if (intervention.phase === "deny_reason") {
+    const cachedReason = String(pendingSecurityDenyReasons.get(targetSessionId) || "").trim();
+    if (cachedReason) {
+      pendingSecurityDenyReasons.delete(targetSessionId);
+      try {
+        await sendSessionExtensionUiResponse(targetSessionId, {
+          id: intervention.requestId,
+          value: cachedReason,
+        });
+        if (
+          activeSecurityIntervention?.sessionId === targetSessionId &&
+          activeSecurityIntervention?.phase === "decision"
+        ) {
+          closeActiveSecurityIntervention();
+        }
+        return;
+      } catch (error) {
+        console.error("Failed to auto-submit security deny reason:", error);
+        pendingSecurityDenyReasons.set(targetSessionId, cachedReason);
+        if (
+          activeSecurityIntervention?.sessionId === targetSessionId &&
+          activeSecurityIntervention?.phase === "decision"
+        ) {
+          setSecurityDecisionSubmittingState(false);
+          setSecurityModalFeedback(`发送禁止理由失败：${error.message}`);
+        } else {
+          showSettingsHint(`发送禁止理由失败：${error.message}`);
+        }
+      }
+    }
+  }
+
+  enqueueSecurityIntervention(request, targetSessionId);
+}
+
+async function dismissActiveSecurityIntervention() {
+  const intervention = activeSecurityIntervention;
+  if (!intervention || securityDecisionSubmitting) {
+    return;
+  }
+  setSecurityDecisionSubmittingState(true);
+  setSecurityModalFeedback("正在取消这次安全确认。", false);
+  try {
+    pendingSecurityDenyReasons.delete(intervention.sessionId);
+    await sendSessionExtensionUiResponse(intervention.sessionId, {
+      id: intervention.requestId,
+      cancelled: true,
+    });
+    closeActiveSecurityIntervention();
+  } catch (error) {
+    console.error("Failed to cancel security intervention:", error);
+    if (activeSecurityIntervention?.id === intervention.id) {
+      setSecurityDecisionSubmittingState(false);
+      setSecurityModalFeedback(`取消失败：${error.message}`);
+    } else {
+      showSettingsHint(`取消失败：${error.message}`);
+    }
+  }
+}
+
+async function handleSecurityApproval() {
+  const intervention = activeSecurityIntervention;
+  if (!intervention || intervention.phase !== "decision" || !intervention.canRequestApproval || securityDecisionSubmitting) {
+    return;
+  }
+  setSecurityDecisionSubmittingState(true);
+  setSecurityModalFeedback("正在允许当前工具调用继续。", false);
+  try {
+    pendingSecurityDenyReasons.delete(intervention.sessionId);
+    await sendSessionExtensionUiResponse(intervention.sessionId, {
+      id: intervention.requestId,
+      value: "allow_once",
+    });
+    discardQueuedSecurityInterventions(intervention.sessionId);
+    closeActiveSecurityIntervention();
+  } catch (error) {
+    console.error("Failed to approve inline security request:", error);
+    if (activeSecurityIntervention?.id === intervention.id) {
+      setSecurityDecisionSubmittingState(false);
+      setSecurityModalFeedback(`允许失败：${error.message}`);
+    } else {
+      showSettingsHint(`允许失败：${error.message}`);
+    }
+  }
+}
+
+async function handleSecurityDeny() {
+  const intervention = activeSecurityIntervention;
+  if (!intervention || securityDecisionSubmitting) {
+    return;
+  }
+  const steerReason = String(securitySteerInputEl?.value || "").trim();
+  if (!steerReason) {
+    setSecurityModalFeedback("请输入禁止原因，我会把它直接转成对 Pi 的约束。");
+    securitySteerInputEl?.focus();
+    return;
+  }
+  setSecurityDecisionSubmittingState(true);
+  setSecurityModalFeedback("正在把禁止理由发给 Pi。", false);
+  try {
+    if (intervention.phase === "decision") {
+      pendingSecurityDenyReasons.set(intervention.sessionId, steerReason);
+      await sendSessionExtensionUiResponse(intervention.sessionId, {
+        id: intervention.requestId,
+        value: "deny_with_reason",
+      });
+      return;
+    }
+    await sendSessionExtensionUiResponse(intervention.sessionId, {
+      id: intervention.requestId,
+      value: steerReason,
+    });
+    pendingSecurityDenyReasons.delete(intervention.sessionId);
+    discardQueuedSecurityInterventions(intervention.sessionId);
+    closeActiveSecurityIntervention();
+  } catch (error) {
+    console.error("Failed to deny inline security request:", error);
+    pendingSecurityDenyReasons.delete(intervention.sessionId);
+    if (activeSecurityIntervention?.id === intervention.id) {
+      setSecurityDecisionSubmittingState(false);
+      setSecurityModalFeedback(`禁止失败：${error.message}`);
+    } else {
+      showSettingsHint(`禁止失败：${error.message}`);
+    }
   }
 }
 
@@ -2050,8 +2589,7 @@ function collapseSessionSidebarForWikiLayout() {
   saveSessionSidebarState(true);
 }
 
-async function abortCurrentReply() {
-  const sessionId = currentSessionId;
+async function abortSessionReply(sessionId) {
   if (!sessionId || !pendingSessionIds.has(sessionId) || abortingSessionIds.has(sessionId)) {
     return;
   }
@@ -2070,6 +2608,18 @@ async function abortCurrentReply() {
   } catch (error) {
     abortingSessionIds.delete(sessionId);
     refreshChatPendingState();
+    throw error;
+  }
+}
+
+async function abortCurrentReply() {
+  const sessionId = currentSessionId;
+  if (!sessionId) {
+    return;
+  }
+  try {
+    await abortSessionReply(sessionId);
+  } catch (error) {
     appendMessage("assistant", `终止回复失败：${error.message}`);
   }
 }
@@ -2078,6 +2628,7 @@ window.ChatWorkbench = {
   focusInput: focusChatInput,
   injectPrompt,
   reloadPiOptions,
+  reloadSecuritySettings,
   reloadSlashCommands: async () => {
     await loadSlashCommands();
     refreshSlashPanelFromInput();
@@ -2395,7 +2946,7 @@ function createWorklogNote(item) {
 function createWorklogStatus(item) {
   const row = document.createElement("p");
   row.className = "trace-worklog-status";
-  row.textContent = item.title || "Pi 状态";
+  row.textContent = item.detail ? `${item.title || "Pi 状态"}：${item.detail}` : (item.title || "Pi 状态");
 
   return {
     element: row,
@@ -2572,7 +3123,7 @@ function appendMessage(role, content, consultedPages = [], trace = [], warnings 
   refreshChatNavigation({ structureChanged: role === "user" });
 }
 
-function createStreamingAssistantMessage(initialText) {
+function createStreamingAssistantMessage(initialText, options = {}) {
   const wrapper = document.createElement("article");
   wrapper.className = "message message-assistant";
 
@@ -2754,6 +3305,9 @@ function createStreamingAssistantMessage(initialText) {
         return;
       }
       traceState.push({ ...item });
+      if (typeof options.onTrace === "function") {
+        options.onTrace({ ...item }, traceState.map((entry) => ({ ...entry })));
+      }
 
       traceCount += 1;
       updateTraceSummary();
@@ -3357,10 +3911,10 @@ async function deleteSession(sessionId) {
   }
 }
 
-async function sendMessage(message) {
+async function sendMessage(message, options = {}) {
   saveCurrentHistory();
 
-  let requestSessionId = currentSessionId;
+  let requestSessionId = String(options?.sessionId || currentSessionId || "").trim() || currentSessionId;
   try {
     if (!requestSessionId) {
       requestSessionId = await createSessionForFirstMessage(message);
@@ -3420,6 +3974,11 @@ async function sendMessage(message) {
 
       if (type === "trace") {
         liveMessage.addTrace(event.item || {});
+        return;
+      }
+
+      if (type === "extension_ui_request") {
+        void handleIncomingExtensionUiRequest(event.request || {}, event.session_id || requestSessionId);
         return;
       }
 
@@ -3501,6 +4060,11 @@ async function sendMessage(message) {
   } finally {
     abortingSessionIds.delete(requestSessionId);
     pendingSessionIds.delete(requestSessionId);
+    pendingSecurityDenyReasons.delete(requestSessionId);
+    discardQueuedSecurityInterventions(requestSessionId);
+    if (activeSecurityIntervention?.sessionId === requestSessionId) {
+      closeActiveSecurityIntervention();
+    }
     refreshChatPendingState();
     renderSessionList();
     void refreshCurrentSessionDetailInBackground(requestSessionId);
@@ -3604,6 +4168,11 @@ document.addEventListener("keydown", (event) => {
   if (event.defaultPrevented) {
     return;
   }
+  if (activeSecurityIntervention && event.key === "Escape") {
+    event.preventDefault();
+    void dismissActiveSecurityIntervention();
+    return;
+  }
   if (slashPanelVisible && event.target !== inputEl && handleSlashPanelKeydown(event)) {
     return;
   }
@@ -3699,6 +4268,33 @@ thinkingButtonEl?.addEventListener("click", () => {
   toggleChatControlMenu("thinking");
 });
 
+securityButtonEl?.addEventListener("click", () => {
+  if (securityButtonEl.disabled) {
+    return;
+  }
+  toggleChatControlMenu("security");
+});
+
+securityCloseButtonEl?.addEventListener("click", async () => {
+  await dismissActiveSecurityIntervention();
+});
+
+securityApproveButtonEl?.addEventListener("click", async () => {
+  await handleSecurityApproval();
+});
+
+securityDenyButtonEl?.addEventListener("click", async () => {
+  await handleSecurityDeny();
+});
+
+securitySteerInputEl?.addEventListener("keydown", async (event) => {
+  if (event.key !== "Enter" || (!event.metaKey && !event.ctrlKey)) {
+    return;
+  }
+  event.preventDefault();
+  await handleSecurityDeny();
+});
+
 async function bootstrapChat() {
   applySessionSidebarState(loadSessionSidebarState());
   await reloadSessions();
@@ -3725,14 +4321,19 @@ async function bootstrapChat() {
 async function warmStartupDataInBackground() {
   const startupTasks = await Promise.allSettled([
     reloadPiOptions(),
+    reloadSecuritySettings({ silent: true }),
     loadSlashCommands(),
     refreshInboxFiles(),
   ]);
-  const [piOptionsResult, slashCommandsResult, inboxResult] = startupTasks;
+  const [piOptionsResult, securityResult, slashCommandsResult, inboxResult] = startupTasks;
 
   if (piOptionsResult?.status === "rejected") {
     console.error("Failed to load Pi options:", piOptionsResult.reason);
     showSettingsHint(`加载模型与思考水平选项失败：${piOptionsResult.reason?.message || piOptionsResult.reason}`);
+  }
+  if (securityResult?.status === "rejected") {
+    console.error("Failed to load security settings:", securityResult.reason);
+    showSettingsHint(`加载安全模式失败：${securityResult.reason?.message || securityResult.reason}`);
   }
   if (slashCommandsResult?.status === "rejected") {
     console.error("Failed to load slash commands:", slashCommandsResult.reason);

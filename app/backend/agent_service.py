@@ -15,6 +15,7 @@ from .config import (
 )
 from .pi_rpc_client import PiRpcClient, PiRpcError
 from .raw_service import search_raw_files
+from .security_service import get_pi_security_extension_args
 from .session_manager import get_session_pool
 from .wiki_service import search_pages
 
@@ -25,7 +26,7 @@ PI_INTERRUPTED_USER_MESSAGE = "Pi 回复异常中断，本次请求已自动停�
 
 
 def _pi_rpc_extra_args(*args: str) -> list[str]:
-    return [*args, *get_pi_extension_args()]
+    return [*args, *get_pi_extension_args(), *get_pi_security_extension_args()]
 
 
 def get_agent_backend_status() -> dict[str, Any]:
@@ -324,10 +325,11 @@ def _rpc_trace_item_from_event(event: dict[str, Any]) -> dict[str, Any] | None:
             or "Pi RPC reported a tool execution error.",
             max_length=220,
         )
+        is_security_block, clean_detail = _strip_security_reason_prefix(detail)
         return {
             "kind": "status",
-            "title": f"工具出错：{tool_name}",
-            "detail": detail,
+            "title": f"{'安全限制已阻止' if is_security_block else '工具出错'}：{tool_name}",
+            "detail": clean_detail,
             "action": "status",
             "event_type": event_type,
         }
@@ -348,14 +350,30 @@ def _stringify_rpc_error_detail(value: Any, *, max_length: int = 220) -> str:
     if isinstance(value, (int, float, bool)):
         return str(value)
     if isinstance(value, dict):
-        for key in ("message", "errorMessage", "finalError", "reason", "type"):
+        for key in ("message", "errorMessage", "finalError", "reason", "text", "value"):
             nested = _stringify_rpc_error_detail(value.get(key), max_length=max_length)
             if nested:
                 return nested
+        content = value.get("content")
+        nested_content = _stringify_rpc_error_detail(content, max_length=max_length)
+        if nested_content:
+            return nested_content
         return _short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
     if isinstance(value, list) and value:
+        for item in reversed(value):
+            nested = _stringify_rpc_error_detail(item, max_length=max_length)
+            if nested:
+                return nested
         return _short_trace_text(json.dumps(value, ensure_ascii=False), max_length=max_length)
     return ""
+
+
+def _strip_security_reason_prefix(detail: str) -> tuple[bool, str]:
+    normalized = str(detail or "").strip()
+    prefix = "[gogo-security]"
+    if normalized.startswith(prefix):
+        return True, normalized[len(prefix) :].strip()
+    return False, normalized
 
 
 def _extract_rpc_error_detail_from_message(message: Any) -> str:
@@ -424,6 +442,22 @@ def _no_visible_text_message(raw_error_detail: str) -> str:
     return f"{base} Pi 原始报错：{detail}"
 
 
+async def _auto_cancel_extension_ui_request(
+    rpc_client: PiRpcClient,
+    event: dict[str, Any],
+) -> None:
+    request_id = str(event.get("id") or "").strip()
+    if not request_id:
+        return
+    try:
+        await rpc_client.send_extension_ui_response(
+            ui_request_id=request_id,
+            cancelled=True,
+        )
+    except Exception:
+        logger.warning("Failed to auto-cancel extension UI request in legacy RPC path", exc_info=True)
+
+
 async def _run_pi_rpc_agent_chat_async(
     message: str,
     history: list[dict[str, str]],
@@ -458,6 +492,9 @@ async def _run_pi_rpc_agent_chat_async(
                 request_id=request_id,
             ):
                 event_type = str(event.get("type") or "")
+                if event_type == "extension_ui_request":
+                    await _auto_cancel_extension_ui_request(rpc_client, event)
+                    continue
                 event_error_detail = _extract_rpc_error_detail_from_event(event)
                 if event_error_detail:
                     latest_error_detail = event_error_detail
@@ -591,6 +628,9 @@ async def _stream_pi_rpc_chat(
                 request_id=request_id,
             ):
                 event_type = str(event.get("type") or "")
+                if event_type == "extension_ui_request":
+                    await _auto_cancel_extension_ui_request(rpc_client, event)
+                    continue
                 event_error_detail = _extract_rpc_error_detail_from_event(event)
                 if event_error_detail:
                     latest_error_detail = event_error_detail

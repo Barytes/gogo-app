@@ -4,7 +4,7 @@
 >
 > 注：文档中包含重构前的历史分析（涉及旧文件）用于决策追溯；当前运行链路已为 RPC-only。
 
-**更新时间**: 2026-04-14
+**更新时间**: 2026-04-18
 
 ---
 
@@ -179,6 +179,11 @@ FastAPI
 - F3 已完成（Session 管理层接入 RPC 会话命令与并发互斥）
 - F4 已完成（历史恢复切到 Pi 原生会话链路）
 - F5 已完成（legacy 主路径下线，架构收敛为 RPC-only）
+
+补充说明（2026-04-18）：
+
+- 当前 RPC-only 主链路又增加了一层首发前最小安全约束：`agent_service.py` 与 `session_manager.py` 启动 Pi RPC 时，会在 Provider extension 之外额外注入 gogo-app 托管的 `managed-security.ts`
+- 这层约束属于应用级“最小安全边界”，不是容器级强沙箱；其职责是限制 `bash/write/edit` 的默认能力范围，并把 allow / block 决策写入本地安全日志
 
 ## 7.1 当前实现与原方案描述的差异（已落地）
 

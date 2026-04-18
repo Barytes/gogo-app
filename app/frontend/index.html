@@ -229,18 +229,63 @@
                 </div>
               </div>
 	              <form id="chat-form" class="chat-form">
-	                <input
-	                  id="chat-upload-input"
-	                  type="file"
-	                  hidden
-	                  multiple
-	                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
-	                />
-	                <div class="chat-input-shell">
-	                  <div class="chat-composer-controls">
-	                    <button
-	                      id="chat-upload-button"
-	                      class="chat-control-button chat-control-icon-button"
+		                <input
+		                  id="chat-upload-input"
+		                  type="file"
+		                  hidden
+		                  multiple
+		                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
+		                />
+		                <div class="chat-input-shell">
+		                  <div id="chat-security-modal" class="chat-security-popover hidden" aria-hidden="true">
+		                    <section class="chat-security-dialog" role="dialog" aria-labelledby="chat-security-modal-title">
+		                      <div class="chat-security-dialog-header">
+		                        <div>
+		                          <p class="chat-security-dialog-eyebrow">Pi 安全确认</p>
+		                          <h2 id="chat-security-modal-title">这次操作被当前安全模式拦住了</h2>
+		                        </div>
+		                        <button id="chat-security-close-button" class="chat-security-close-button" type="button" aria-label="关闭安全确认弹窗">×</button>
+		                      </div>
+		                      <div class="chat-security-dialog-body">
+		                        <div class="chat-security-summary-grid">
+		                          <div class="chat-security-summary-card">
+		                            <p class="chat-security-summary-label">当前模式</p>
+		                            <p id="chat-security-modal-mode" class="chat-security-summary-value">—</p>
+		                          </div>
+		                          <div class="chat-security-summary-card">
+		                            <p class="chat-security-summary-label">是否可放行</p>
+		                            <p id="chat-security-modal-approval" class="chat-security-summary-value">—</p>
+		                          </div>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <p class="chat-security-detail-label">Pi 正要执行的操作</p>
+		                          <pre id="chat-security-modal-command" class="chat-security-command-preview">—</pre>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <p class="chat-security-detail-label">拦截原因</p>
+		                          <p id="chat-security-modal-reason" class="chat-security-reason-text">—</p>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <label for="chat-security-steer-input" class="chat-security-detail-label">如果要禁止，请告诉 Pi 为什么不能这样做</label>
+		                          <textarea
+		                            id="chat-security-steer-input"
+		                            class="chat-security-steer-input"
+		                            rows="3"
+		                            placeholder="例如：不要动宿主机上的配置文件，请只在当前 knowledge-base 内完成。"
+		                          ></textarea>
+		                        </div>
+		                        <p id="chat-security-modal-feedback" class="chat-security-feedback hidden" aria-live="polite"></p>
+		                      </div>
+		                      <div class="chat-security-dialog-actions">
+		                        <button id="chat-security-approve-button" class="button button-secondary" type="button">允许这一次</button>
+		                        <button id="chat-security-deny-button" class="button button-primary" type="button">禁止并告知 Pi</button>
+		                      </div>
+		                    </section>
+		                  </div>
+		                  <div class="chat-composer-controls">
+		                    <button
+		                      id="chat-upload-button"
+		                      class="chat-control-button chat-control-icon-button"
 	                      type="button"
 	                      aria-label="上传文件"
 	                      title="上传文件"
@@ -281,6 +326,18 @@
 	                    >
 	                      /
 	                    </button>
+	                    <div class="chat-control-menu-shell">
+	                      <button
+	                        id="chat-security-button"
+	                        class="chat-control-button"
+	                        type="button"
+	                        aria-haspopup="menu"
+	                        aria-expanded="false"
+	                      >
+	                        安全模式
+	                      </button>
+	                      <div id="chat-security-menu" class="chat-control-menu hidden" role="menu"></div>
+	                    </div>
 	                    <div id="chat-context-shell" class="chat-context-shell hidden">
 	                      <button
 	                        id="chat-context-button"
@@ -585,7 +642,7 @@
 		                  <div>
 		                    <p class="settings-subtitle">系统诊断</p>
 		                    <p class="settings-help">
-		                      这里会汇总当前知识库、Pi RPC、会话目录和默认模型配置，方便直接判断当前工作台是不是连在正确的环境上。
+		                      这里会汇总当前知识库、Pi RPC、会话目录、默认模型配置和 Pi 最小安全约束，方便直接判断当前工作台是不是连在正确的环境上。
 		                    </p>
 		                  </div>
 		                  <div class="settings-actions">
@@ -614,6 +671,11 @@
 		                      <h3>Provider 默认值</h3>
 		                      <dl id="diagnostics-provider-list" class="settings-diagnostics-list"></dl>
 		                    </article>
+		                    <article class="settings-diagnostics-card">
+		                      <h3>安全边界</h3>
+		                      <dl id="diagnostics-security-list" class="settings-diagnostics-list"></dl>
+		                      <div id="diagnostics-security-events" class="settings-chip-list"></div>
+		                    </article>
 		                  </div>
 		                </div>
 		              </section>
@@ -621,10 +683,10 @@
 		          </div>
 		        </section>
 		      </div>
-	      <div id="settings-toast-viewport" class="settings-toast-viewport" aria-live="polite" aria-atomic="true"></div>
-	    </div>
-
-    <script src="/assets/vendor/katex/katex.min.js?v=20260418-01"></script>
+		      <div id="settings-toast-viewport" class="settings-toast-viewport" aria-live="polite" aria-atomic="true"></div>
+		    </div>
+	
+	    <script src="/assets/vendor/katex/katex.min.js?v=20260418-01"></script>
     <script src="/assets/vendor/katex/auto-render.min.js?v=20260418-01"></script>
     <script src="/assets/math-render.js?v=20260418-01"></script>
     <script src="/assets/desktop-bridge.js?v=20260417-03"></script>

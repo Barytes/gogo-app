@@ -4,7 +4,7 @@
 > 项目级架构参考：[gogo-project-architecture.md](docs/gogo-project-architecture.md)  
 > 应用架构参考：[gogo-app-architecture.md](docs/gogo-app-architecture.md)
 
-**最后更新**: 2026-04-17
+**最后更新**: 2026-04-18
 
 ## 相关任务文档
 
@@ -359,6 +359,36 @@
   - [ ] 写回 Wiki
   - [ ] 验证 companion knowledge-base 和用户自有 knowledge-base 两条路径都可跑通
   - [ ] 验证“已配置模型”和“未配置模型但先浏览 Wiki”两种首屏路径都成立
+  - [x] 补齐首发前的最小安全约束，降低 `pi` 直接执行 bash / 写文件时的宿主机风险
+    - [x] 设计并落地用户可见的安全模式总开关：
+      - [x] `只读模式`：允许聊天、读文件、搜索，禁止 `write` / `edit` / `bash`
+      - [x] `允许写文件`：允许 `write` / `edit`，但禁止 `bash`
+      - [x] `允许执行命令`：允许 `write` / `edit` / `bash`，但仍默认阻断明显危险命令
+    - [x] 明确并固化默认工作区边界：
+      - [x] 默认以当前 knowledge-base 目录作为 `pi` workdir
+      - [x] 当前首发版本仅信任当前 knowledge-base，不允许 agent 自由漂移到任意目录
+      - [x] 在 diagnostics / 设置中显示当前受信任工作区范围，方便用户理解边界
+    - [x] 基于 `pi` extension 机制实现一层 managed security extension，拦截 `tool_call`
+      - [x] 优先覆盖 `bash`
+      - [x] 覆盖 `write` / `edit`
+      - [x] extension 由 `gogo-app` 托管生成与更新，不要求用户手工维护
+    - [x] 为明显危险命令建立默认阻断规则
+      - [x] 直接阻断高风险模式，例如 `sudo`、`rm -rf /`、`rm -rf ~`、磁盘格式化、系统服务命令等
+      - [x] 用可维护规则表统一管理，而不是把判断散落在 UI / 后端多处
+      - [x] 在被阻断时向用户明确说明“为什么被阻断”
+    - [x] 增加 bash / 写文件操作的完整日志与可见提示
+      - [x] 记录时间、session、tool、目标路径/命令、判定结果（allow / block）
+      - [x] 在聊天工作日志 / trace 中明确显示“安全限制已阻止：...”
+      - [x] 日志只保存在本地，不自动上传
+    - [x] 为首发建立一份“最小安全边界”文档
+      - [x] 明确当前不是强沙箱，不承诺容器级隔离
+      - [x] 明确当前默认限制与用户可调整项
+      - [x] 把“容器化执行 / 更强沙箱”列为后续增强项，而不是首发阻塞项
+    - 结论：当前版本已经具备首发可用的“最小安全约束”闭环。Pi RPC 进程会自动加载 gogo-app 托管的 `managed-security.ts`；默认安全模式为“允许写文件”，允许在当前 knowledge-base 内执行 `write/edit`，默认禁止 `bash`，并持续阻断 `sudo`、删根目录、磁盘格式化等明显危险命令。所有 `bash/write/edit` 的 allow/block 决策都会写入本地安全日志，并在 diagnostics 中展示当前模式、受信任工作区、日志路径与最近审计记录。
+    - 后续增强（不再阻塞首发）
+      - [ ] 为“可能危险但用户可能确实要做”的操作建立二次确认
+      - [ ] 接入 `pi` 的 RPC extension UI confirm 子协议
+      - [ ] 评估容器化执行 / 更强沙箱
 
 #### 4.5 Phase 5: 跨平台兼容与干净机器验收
 
