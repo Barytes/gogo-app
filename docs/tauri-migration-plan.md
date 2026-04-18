@@ -19,6 +19,7 @@
 - 已把 `desktop:build` 重构为跨平台 Node 构建入口，不再依赖 Unix shell；默认只使用 `src-tauri/desktop-runtime-staging/` 作为 bundle 前的运行时 staging 目录
 - 已在发布态把默认 knowledge-base、session 与 Pi extension 等可写状态收口到 app data 目录
 - 已接入 companion knowledge-base 首次启动选址：当本地还没有已保存的知识库路径时，桌面版会先弹出系统目录选择器，并记住用户选择的 companion knowledge-base 位置
+- 已把首次启动页收束成普通用户路径：桌面版会在启动阶段显示 `pi` 安装/检测、模型配置与诊断入口，并把“先浏览 Wiki”保留为清晰分支，而不是报错中断
 - 已把 bundled `pi` 接入桌面打包链：构建时可通过 `GOGO_DESKTOP_PI_BINARY` 将上游 `pi` 运行目录收进 bundle resources，运行时优先使用
 - 已保留 `pi` 检测与启动前后台安装作为 fallback：仅当 bundled / system `pi` 都缺失时，桌面版才会展示启动引导，并通过 `npm` 把 `pi` 安装到 app data 下的托管 `pi-runtime/`
 - 已补齐 Windows 侧代码适配的基础骨架：桌面版登录桥现在会在 Windows 上通过 `cmd.exe` 拉起 bundled/system `pi` 并提示用户手动输入 `/login`；待 Windows 实机验收

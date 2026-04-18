@@ -143,6 +143,14 @@ class PiRpcClient:
             return []
         return [item for item in models if isinstance(item, dict)]
 
+    async def get_session_stats(self, *, request_id: str | None = None) -> dict[str, Any]:
+        response = await self._send_command_and_wait_response(
+            command_type="get_session_stats",
+            payload={},
+            request_id=request_id,
+        )
+        return response.get("data") if isinstance(response.get("data"), dict) else {}
+
     async def abort(self, *, request_id: str | None = None) -> bool:
         command_id = (request_id or str(uuid.uuid4())).strip()
         await self._write_command({"id": command_id, "type": "abort"})
@@ -216,6 +224,23 @@ class PiRpcClient:
         response = await self._send_command_and_wait_response(
             command_type="set_model",
             payload={"provider": provider, "modelId": model_id},
+            request_id=request_id,
+        )
+        data = response.get("data")
+        return data if isinstance(data, dict) else {}
+
+    async def compact(
+        self,
+        *,
+        custom_instructions: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
+        if custom_instructions and custom_instructions.strip():
+            payload["customInstructions"] = custom_instructions.strip()
+        response = await self._send_command_and_wait_response(
+            command_type="compact",
+            payload=payload,
             request_id=request_id,
         )
         data = response.get("data")

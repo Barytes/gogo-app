@@ -45,6 +45,7 @@ PI_MANAGED_PROVIDER_EXTENSION = PI_EXTENSION_DIR / "managed-providers.ts"
 BUNDLED_PI_DIR = APP_ROOT / "pi-runtime"
 PI_RUNTIME_DIR = APP_STATE_DIR / "pi-runtime"
 MODEL_PROVIDER_PROFILES_KEY = "model_provider_profiles"
+STARTUP_ONBOARDING_PENDING_KEY = "startup_onboarding_pending"
 GOGO_RUNTIME = str(os.getenv("GOGO_RUNTIME") or "web").strip().lower() or "web"
 PROVIDER_AUTH_MODE_DESKTOP = "desktop-pi-login"
 PROVIDER_AUTH_MODE_MANUAL = "manual-tokens"
@@ -223,6 +224,26 @@ def get_knowledge_base_settings() -> dict[str, object]:
         "session_namespace": _knowledge_base_session_namespace(path),
         "recent": deduped[:8],
     }
+
+
+def get_startup_settings() -> dict[str, object]:
+    settings = _load_app_settings()
+    pending_raw = settings.get(STARTUP_ONBOARDING_PENDING_KEY)
+    pending = bool(pending_raw) if isinstance(pending_raw, bool) else False
+    knowledge_base_dir = get_knowledge_base_dir()
+    return {
+        "onboarding_pending": pending,
+        "default_knowledge_base_dir": str(DEFAULT_KNOWLEDGE_BASE_DIR),
+        "knowledge_base_dir": str(knowledge_base_dir),
+        "using_default_knowledge_base_dir": knowledge_base_dir == DEFAULT_KNOWLEDGE_BASE_DIR,
+    }
+
+
+def complete_startup_onboarding() -> dict[str, object]:
+    settings = _load_app_settings()
+    settings[STARTUP_ONBOARDING_PENDING_KEY] = False
+    _save_app_settings(settings)
+    return get_startup_settings()
 
 
 def set_knowledge_base_dir(raw_path: str) -> dict[str, object]:

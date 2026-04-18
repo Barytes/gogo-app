@@ -4,7 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Research KB MVP</title>
-    <link rel="stylesheet" href="/assets/styles.css?v=20260415-12" />
+    <link rel="stylesheet" href="/assets/styles.css?v=20260417-03" />
   </head>
   <body>
     <div id="startup-overlay" class="startup-overlay">
@@ -14,11 +14,29 @@
         <p id="startup-description" class="startup-description">
           gogo-app 正在确认本地知识库工作台所需的运行环境，请稍候。
         </p>
+        <div id="startup-wizard-progress" class="startup-wizard-progress hidden"></div>
+        <div id="startup-wizard-panel" class="startup-wizard-panel hidden"></div>
+        <div id="startup-phase-list" class="startup-phase-list"></div>
         <dl id="startup-status-list" class="startup-status-list"></dl>
         <p id="startup-feedback" class="settings-feedback hidden" aria-live="polite"></p>
         <div class="startup-actions">
+          <button id="startup-back-button" class="button button-secondary hidden" type="button">
+            上一步
+          </button>
+          <button id="startup-next-button" class="button button-primary hidden" type="button">
+            下一步
+          </button>
+          <button id="startup-pick-knowledge-base-button" class="button button-primary" type="button">
+            选择知识库位置
+          </button>
           <button id="startup-install-pi-button" class="button button-primary" type="button">
             安装 Pi
+          </button>
+          <button id="startup-configure-model-button" class="button button-secondary" type="button">
+            配置模型
+          </button>
+          <button id="startup-open-diagnostics-button" class="button button-secondary" type="button">
+            查看诊断
           </button>
           <button id="startup-retry-button" class="button button-secondary hidden" type="button">
             重新检查
@@ -262,6 +280,26 @@
 	                    >
 	                      /
 	                    </button>
+	                    <div id="chat-context-shell" class="chat-context-shell hidden">
+	                      <button
+	                        id="chat-context-button"
+	                        class="chat-control-button chat-control-icon-button chat-context-button"
+	                        type="button"
+	                        aria-haspopup="dialog"
+	                        aria-expanded="false"
+	                        aria-label="当前 context window 使用情况"
+	                        title="当前 context window 使用情况"
+	                      >
+	                        <span id="chat-context-ring" class="chat-context-ring" aria-hidden="true"></span>
+	                      </button>
+	                      <div id="chat-context-popover" class="chat-context-popover" role="dialog" aria-label="Context window 使用情况">
+	                        <p class="chat-context-popover-eyebrow">Context window</p>
+	                        <p id="chat-context-percent" class="chat-context-popover-percent">--</p>
+	                        <p id="chat-context-tokens" class="chat-context-popover-tokens">-- / -- tokens</p>
+	                        <p id="chat-context-help" class="chat-context-popover-help">发送几轮消息后，这里会显示当前会话占用了多少上下文。</p>
+	                        <button id="chat-context-compact-button" class="chat-context-popover-action" type="button">/compact</button>
+	                      </div>
+	                    </div>
 	                  </div>
 	                  <p id="chat-settings-hint" class="chat-settings-hint hidden" aria-live="polite"></p>
                     <div id="chat-slash-panel" class="chat-slash-panel hidden" role="listbox" aria-label="slash 命令列表">
@@ -544,13 +582,16 @@
 		              <section id="settings-section-diagnostics" class="settings-section-pane" data-settings-section-pane="diagnostics">
 		                <div class="settings-section">
 		                  <div>
-		                    <p class="settings-subtitle">Health / Diagnostics</p>
+		                    <p class="settings-subtitle">系统诊断</p>
 		                    <p class="settings-help">
 		                      这里会汇总当前知识库、Pi RPC、会话目录和默认模型配置，方便直接判断当前工作台是不是连在正确的环境上。
 		                    </p>
 		                  </div>
 		                  <div class="settings-actions">
 		                    <button id="install-pi-button" class="button button-secondary hidden" type="button">安装 Pi</button>
+		                    <button id="open-diagnostics-kb-button" class="button button-secondary" type="button">打开知识库目录</button>
+		                    <button id="open-diagnostics-log-button" class="button button-secondary" type="button">打开日志</button>
+		                    <button id="export-diagnostics-summary-button" class="button button-secondary" type="button">导出诊断摘要</button>
 		                    <button id="refresh-diagnostics-button" class="button button-primary" type="button">刷新状态</button>
 		                  </div>
 		                  <p id="diagnostics-feedback" class="settings-feedback hidden" aria-live="polite"></p>
@@ -582,8 +623,8 @@
 	      <div id="settings-toast-viewport" class="settings-toast-viewport" aria-live="polite" aria-atomic="true"></div>
 	    </div>
 
-	    <script src="/assets/desktop-bridge.js?v=20260417-01"></script>
-	    <script src="/assets/workbench.js?v=20260417-01"></script>
+	    <script src="/assets/desktop-bridge.js?v=20260417-03"></script>
+	    <script src="/assets/workbench.js?v=20260417-03"></script>
 	    <script src="/assets/wiki.js?v=20260415-12"></script>
 	    <script src="/assets/chat.js?v=20260415-12"></script>
   </body>

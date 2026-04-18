@@ -689,6 +689,89 @@ class SessionPool:
             self._sync_registry_from_session(latest)
             return latest.info.to_dict()
 
+    def get_session_stats(self, session_id: str) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise KeyError(session_id)
+
+        command_path = get_pi_command_path()
+        if not command_path:
+            raise RuntimeError("RPC mode requires `pi` command on PATH.")
+
+        async def load_stats() -> dict[str, Any]:
+            async with PiRpcClient(
+                command_path=command_path,
+                cwd=session.workdir,
+                timeout_seconds=get_pi_timeout_seconds(),
+                extra_args=_pi_rpc_extra_args("--session-dir", str(get_pi_rpc_session_dir())),
+            ) as client:
+                await client.switch_session(
+                    session_path=session.session_file,
+                    request_id=f"{session_id}:stats:switch",
+                )
+                return await client.get_session_stats(
+                    request_id=f"{session_id}:stats:get",
+                )
+
+        return _run_coro_sync(load_stats())
+
+    def compact_session(
+        self,
+        session_id: str,
+        *,
+        custom_instructions: str | None = None,
+    ) -> dict[str, Any]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                raise KeyError(session_id)
+            if session.info.pending_request_id:
+                raise RuntimeError("该会话仍在回复中，暂时无法 compact。")
+
+        command_path = get_pi_command_path()
+        if not command_path:
+            raise RuntimeError("RPC mode requires `pi` command on PATH.")
+
+        async def compact() -> dict[str, Any]:
+            async with PiRpcClient(
+                command_path=command_path,
+                cwd=session.workdir,
+                timeout_seconds=get_pi_timeout_seconds(),
+                extra_args=_pi_rpc_extra_args("--session-dir", str(get_pi_rpc_session_dir())),
+            ) as client:
+                await client.switch_session(
+                    session_path=session.session_file,
+                    request_id=f"{session_id}:compact:switch",
+                )
+                result = await client.compact(
+                    custom_instructions=custom_instructions,
+                    request_id=f"{session_id}:compact:run",
+                )
+                stats = await client.get_session_stats(
+                    request_id=f"{session_id}:compact:stats",
+                )
+                state = await client.get_state(
+                    request_id=f"{session_id}:compact:state",
+                )
+                return {
+                    "result": result,
+                    "stats": stats,
+                    "state": state,
+                }
+
+        payload = _run_coro_sync(compact())
+        with self._lock:
+            latest = self._sessions.get(session_id)
+            if latest is None:
+                raise KeyError(session_id)
+            state = payload.get("state")
+            if isinstance(state, dict):
+                self._sync_session_from_state(latest, state)
+            latest.info.last_used_at = time.time()
+            self._sync_registry_from_session(latest)
+        return payload
+
     def get_session_count(self) -> int:
         with self._lock:
             return len(self._sessions)
