@@ -38,7 +38,7 @@
 - 首发模型配置支持：
   - API key 型 provider
   - `pi` 已稳定支持且桌面引导已验证通过的 OAuth provider
-- API key 目标存储策略是**本地安全存储**
+- API key 首发策略是**仅保存在本机认证文件中，不自动上传，暂不接入 macOS Keychain / Windows Credential Manager**
 - 首发最低成功标准是：用户完成模型配置后，能够跑通一次**上传 -> ingest -> 聊天 -> 写回**
 - 首发必须支持**中文路径**与**带空格路径**
 - 知识库浏览与编辑可以断网；聊天链路依赖用户自己配置并联网访问的模型
@@ -185,7 +185,7 @@
 
 - companion knowledge-base 的安装路径由谁决定
 - `pi` 的静默安装与升级链路如何随安装器交付
-- API key 的本地安全存储方案如何落地到不同平台
+- API key 是否以及何时升级到 macOS Keychain / Windows Credential Manager
 
 ## 5. 当前已知限制
 
@@ -202,6 +202,7 @@
 9. 当前自动更新尚未实现。
 10. 当前尚未完成“中文路径 / 空格路径”在正式安装包链路中的跨平台验收。
 11. 调试构建与开发态不能混为一谈：打包后的 debug `.app` 也必须走 bundle 内后端，而不是误连本地 dev server；这一点已经在当前 Tauri 实现里修正。
+12. 首发阶段的 API key 仅保存在本机认证文件中；当前尚未接入 macOS Keychain 或 Windows Credential Manager。
 
 ## 6. 对外文案建议
 
@@ -231,7 +232,7 @@
    - 安装时由用户决定其路径
    - 用户可切换到自己的 knowledge-base，并可随时切回 companion knowledge-base
 4. `pi` 依赖的静默安装、可见性、登录与失败提示已形成可操作引导；当前仓库只完成了“桌面版应用内检测 + 托管安装”的过渡形态。
-5. API key 已落到平台可接受的本地安全存储方案。
+5. API key 已明确为“仅保存在本机认证文件中，不自动上传”的首发策略，且文档已清楚标注当前未接入系统级钥匙串。
 6. 应用内具备最小可用的 diagnostics 与日志导出能力，且默认只保存在本地。
 7. 首发支持矩阵已经明确：
    - Windows + macOS 同时可用

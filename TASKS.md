@@ -296,7 +296,7 @@
 - [x] `pi` 依赖策略：安装器检测并静默安装 `pi`
 - [x] 首次启动主路径：检测/安装 `pi` -> 配置模型/API key（可跳过） -> 进入 companion knowledge-base -> 已配置模型时跑 demo，未配置时可先浏览 Wiki
 - [x] 首发模型配置范围：支持 API key 型 provider，以及 `pi` 已稳定支持且桌面引导已验证通过的 OAuth
-- [x] API key 存储策略：本地安全存储
+- [x] API key 存储策略：首发阶段仅保存在本机认证文件中，不自动上传，暂不接入 macOS Keychain / Windows Credential Manager
 - [x] 首发最低成功标准：用户配置模型后，能完整跑通一次上传、ingest、聊天、写回
 - [x] 首发兼容要求：必须支持中文路径与带空格路径
 - [x] 联网边界：聊天依赖用户自己配置并联网访问的模型；知识库浏览与编辑可断网

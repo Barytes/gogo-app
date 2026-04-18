@@ -113,9 +113,12 @@ class SessionProcess:
 
 
 class SessionPool:
-    def __init__(self, max_sessions: int = 10, idle_timeout: int = 3600):
-        self.max_sessions = max_sessions
-        self.idle_timeout = idle_timeout
+    def __init__(self, max_sessions: int | None = None, idle_timeout: int | None = None):
+        # Desktop sessions are part of the product surface, not just an in-memory cache.
+        # Do not evict or garbage-collect them by default, otherwise users reopen the app
+        # and find their previous sessions gone.
+        self.max_sessions = max_sessions if isinstance(max_sessions, int) and max_sessions > 0 else None
+        self.idle_timeout = idle_timeout if isinstance(idle_timeout, int) and idle_timeout > 0 else None
         self._registry_touch_save_interval = 5.0
         self._registry_last_saved_at = 0.0
         self._sessions: dict[str, SessionProcess] = {}
@@ -209,6 +212,17 @@ class SessionPool:
     def _turns_file(self, session_id: str) -> Path:
         safe_session_id = session_id.replace("/", "_").replace("\\", "_")
         return self._turns_dir / f"{safe_session_id}.jsonl"
+
+    def _file_mtime(self, path: Path | str | None) -> float | None:
+        if not path:
+            return None
+        try:
+            candidate = Path(path).expanduser()
+            if candidate.exists():
+                return candidate.stat().st_mtime
+        except Exception:
+            logger.warning("Failed to inspect file timestamp: %s", path, exc_info=True)
+        return None
 
     def _normalize_history_turn(self, turn: Any) -> dict[str, Any] | None:
         if not isinstance(turn, dict):
@@ -356,6 +370,32 @@ class SessionPool:
 
         return self._slice_history_window(turns, max_turns=max_turns, offset_turns=offset_turns)
 
+    def _app_turns_fast_path_is_safe(
+        self,
+        *,
+        session: SessionProcess,
+        app_turns: list[dict[str, Any]] | None,
+        max_turns: int,
+        offset_turns: int = 0,
+    ) -> bool:
+        if not app_turns or session.info.pending_request_id:
+            return False
+
+        # For the default "latest page" restore path, if the turn log has fewer entries than
+        # the recent window we expect from message_count, it is likely lagging behind the native
+        # Pi session file. In that case we should fall back to native history and merge.
+        if offset_turns <= 0 and max_turns > 0:
+            expected_recent_turns = min(max_turns, max(int(session.info.message_count or 0), 0) * 2)
+            if expected_recent_turns > 0 and len(app_turns) < expected_recent_turns:
+                return False
+
+        turns_mtime = self._file_mtime(self._turns_file(session.session_id))
+        native_mtime = self._file_mtime(session.session_file)
+        if turns_mtime is not None and native_mtime is not None and turns_mtime + 0.001 < native_mtime:
+            return False
+
+        return True
+
     def _persist_exchange_turns(
         self,
         *,
@@ -476,6 +516,8 @@ class SessionPool:
             self._sessions[sid] = session
 
     def _evict_oldest(self) -> None:
+        if self.max_sessions is None:
+            return
         oldest_id = None
         oldest_ts = float("inf")
         for sid, session in self._sessions.items():
@@ -498,7 +540,7 @@ class SessionPool:
     ) -> str:
         del system_prompt  # RPC 链路暂不支持 per-session system prompt
         with self._lock:
-            if len(self._sessions) >= self.max_sessions:
+            if self.max_sessions is not None and len(self._sessions) >= self.max_sessions:
                 self._evict_oldest()
 
             sid = str(uuid.uuid4())
@@ -800,6 +842,8 @@ class SessionPool:
             return True
 
     def cleanup_idle(self) -> list[str]:
+        if self.idle_timeout is None:
+            return []
         now = time.time()
         cleaned: list[str] = []
         with self._lock:
@@ -815,6 +859,8 @@ class SessionPool:
         return cleaned
 
     async def start_cleanup_loop(self, interval: int = 300) -> None:
+        if self.idle_timeout is None:
+            return
         if self._cleanup_task and not self._cleanup_task.done():
             return
 
@@ -1606,25 +1652,15 @@ class SessionPool:
         # (trace/consulted pages/warnings). Replaying it directly avoids spawning a
         # fresh Pi RPC client and calling get_messages() every time the user opens a
         # session, which was a visible source of startup/switch latency.
-        if app_turns and session and not session.info.pending_request_id:
+        if session and self._app_turns_fast_path_is_safe(
+            session=session,
+            app_turns=app_turns,
+            max_turns=max_turns,
+            offset_turns=offset_turns,
+        ):
             return app_turns
 
         if session:
-            online = self._load_history_via_rpc(
-                session=session,
-                max_turns=max_turns,
-                offset_turns=offset_turns,
-            )
-            if online is not None:
-                merged_online = self._merge_rich_history_tail(online, app_turns or [])
-                if merged_online is not None:
-                    return merged_online
-                merged_online = self._merge_rich_history_by_user_turns(online, app_turns or [])
-                if merged_online is not None:
-                    return merged_online
-                if app_turns and len(app_turns) >= len(online):
-                    return app_turns
-                return online
             if session.session_file:
                 offline = self._load_history_from_native_jsonl(
                     session_file=session.session_file,
@@ -1641,6 +1677,21 @@ class SessionPool:
                     if app_turns and len(app_turns) >= len(offline):
                         return app_turns
                     return offline
+            online = self._load_history_via_rpc(
+                session=session,
+                max_turns=max_turns,
+                offset_turns=offset_turns,
+            )
+            if online is not None:
+                merged_online = self._merge_rich_history_tail(online, app_turns or [])
+                if merged_online is not None:
+                    return merged_online
+                merged_online = self._merge_rich_history_by_user_turns(online, app_turns or [])
+                if merged_online is not None:
+                    return merged_online
+                if app_turns and len(app_turns) >= len(online):
+                    return app_turns
+                return online
         if app_turns is not None:
             return app_turns
         return []

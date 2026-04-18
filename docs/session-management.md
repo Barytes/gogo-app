@@ -290,7 +290,7 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
   - 删除对应 `gogo-session-turns/<session_id>.jsonl`
 
 - 空闲清理：
-  - 按 `idle_timeout` 回收非 pending 会话
+  - 当前桌面版默认不自动回收已持久化会话，避免用户重启应用后发现历史会话消失
 
 ---
 
