@@ -1,6 +1,6 @@
 # Docs Index
 
-**最后更新**: 2026-04-18
+**最后更新**: 2026-04-24
 
 > 说明：本索引仅覆盖 `docs/` 根目录文档，不包含 `docs/pi/`。
 
@@ -18,6 +18,7 @@
 - [desktop-packaging-guide.md](desktop-packaging-guide.md) - 当前仓库下 macOS / Windows 的桌面打包方法、前置条件、产物位置与已知边界
 - [desktop-packaging-regressions.md](desktop-packaging-regressions.md) - 桌面打包真实回归、根因、修复与发包前强制检查清单
 - [tauri-migration-plan.md](tauri-migration-plan.md) - gogo-app 当前 Tauri 桌面壳实现、目标架构与后续迁移顺序
+- [workspace-and-agent-runtime-refactor-plan.md](workspace-and-agent-runtime-refactor-plan.md) - 下一阶段两条结构性重构计划：内容工作区抽象，以及“ACP 外接 agent + bundled Pi fallback”的 runtime 抽象
 - [gogo-client-architecture.md](gogo-client-architecture.md) - gogo-client 的职责、边界与同步端架构设计
 - [gogo-server-architecture.md](gogo-server-architecture.md) - gogo-server 的职责、边界与聚合端架构设计
 
