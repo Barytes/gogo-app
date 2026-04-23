@@ -4,7 +4,7 @@
 >
 > 上层产品/应用架构见 [gogo-app-architecture.md](gogo-app-architecture.md)。
 
-**更新时间**: 2026-04-16
+**更新时间**: 2026-04-18
 
 ---
 
@@ -31,6 +31,8 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
   - “思考过程”渲染
   - 会话切换、重命名、删除
   - 会话视图缓存与刷新恢复
+  - 聊天区安全模式切换
+  - 安全阻断弹窗与“允许一次 / 禁止并继续 steer”交互
 
 ### 后端 API
 
@@ -44,6 +46,8 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 - `POST /api/chat`
 - `POST /api/chat/stream`
 - `POST /api/sessions/{id}/chat/stream`（兼容入口）
+- `PATCH /api/settings/security`
+- `POST /api/settings/security/approval`
 - `POST /api/legacy/chat` / `POST /api/legacy/chat/stream`（deprecated）
 
 ### Session 管理器
@@ -64,6 +68,11 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
   - 单 reader task 读取 `stdout`
   - response future 分发
   - prompt 事件队列
+
+补充说明：
+
+- `session_manager.py` 启动 Pi RPC 进程时，除了 Provider extension，也会自动注入 gogo-app 托管的 `managed-security.ts`
+- 因此会话级 `write/edit/bash` 能力始终受当前安全模式约束，而不是直接裸连宿主机
 
 ---
 
@@ -135,12 +144,21 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 
 1. `switch_session(session_file)`
 2. `prompt_events(message)`
-3. 后端把 RPC 事件映射成前端事件：
+3. `Pi managed security extension` 在 `tool_call` 阶段先做安全预检
+4. 后端把 RPC 事件映射成前端事件：
    - `thinking_delta`
    - `text_delta`
    - `trace`
+   - `extension_ui_request`
    - `final`
    - `error`
+
+补充：
+
+- 当 `managed-security.ts` 命中“模式阻断”时，它不会立刻结束当前工具调用，而是先发出 `extension_ui_request`
+- 前端收到后会在聊天输入框上方打开小型安全确认框，用户的选择再通过 `POST /api/sessions/{id}/extension-ui-response` 回写给当前 Pi RPC 请求
+- 如果用户允许，当前 `tool_call` 会直接继续执行；如果用户禁止并填写理由，extension 会在同一轮里把理由变成这次阻断的最终原因
+- 对于危险命令、knowledge-base 外写入、敏感路径这类硬阻断，`session_manager.py` 仍会从错误字符串里提取结构化安全 payload，并挂进 trace item 的 `security` 字段
 
 ### 4.3 终止请求
 
@@ -155,6 +173,45 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 - `abort()` 只负责发送命令，不再同步抢读 response
 - `PiRpcClient` 只有一个 reader task 读 `stdout`
 - 因此不会再出现多个协程并发读同一 `StreamReader` 的问题
+
+### 4.4 安全模式更新
+
+当前 `PATCH /api/settings/security` 保存后，会重置 `SessionPool`，让后续请求按新的 `managed-security.ts` 重新启动 Pi RPC 进程。这个入口现在由聊天输入框控制区触发，而不是 diagnostics 面板。
+
+这意味着：
+
+- 规则变更会对后续请求立即生效
+- 已持久化的会话历史仍保留
+- 当前安全模式和受信任工作区仍可在 diagnostics 中看到
+
+### 4.5 Inline 安全确认
+
+当前聊天主链路的安全确认不再通过“补发 prompt”实现，而是直接复用 Pi RPC extension UI 子协议：
+
+- `POST /api/sessions/{id}/extension-ui-response`
+
+作用：
+
+- 把前端对当前 `extension_ui_request` 的回答发回正在执行的 Pi RPC 请求
+- 让同一个 `tool_call` 在当前轮里恢复执行或保持阻断
+- 避免为了“允许这一次”再补发一个新的 user turn
+
+前端交互链路是：
+
+1. 流式事件收到 `extension_ui_request`
+2. 打开安全确认弹窗
+3. 用户选择：
+   - `允许这一次`
+     前端把 `allow_once` 回写给当前 request，当前 `tool_call` 直接继续
+   - `禁止并告知 Pi`
+     前端先回写“保持禁止”，随后把输入的理由自动响应给 extension 的后续 `input` 请求；extension 再把这段理由作为本次阻断原因返回给 Pi
+
+兼容性说明：
+
+- `POST /api/settings/security/approval`
+- `.gogo/pi-security-approvals.json`
+
+这套“预先写一次性审批文件”的机制仍保留，但已经不是聊天区安全确认的主路径。
 
 ---
 
@@ -290,7 +347,7 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
   - 删除对应 `gogo-session-turns/<session_id>.jsonl`
 
 - 空闲清理：
-  - 按 `idle_timeout` 回收非 pending 会话
+  - 当前桌面版默认不自动回收已持久化会话，避免用户重启应用后发现历史会话消失
 
 ---
 

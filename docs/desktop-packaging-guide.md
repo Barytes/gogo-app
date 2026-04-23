@@ -1,13 +1,13 @@
 # Desktop Packaging Guide
 
-**最后更新**: 2026-04-17
+**最后更新**: 2026-04-18
 
 > 这份指南面向仓库协作者、Windows/macOS 下的 Codex，以及需要从源码构建桌面安装包的人。  
 > 它描述的是**当前仓库状态下**的打包方法与边界，不等同于“已经达到可对外发布标准”。
 
 ## 1. 先说结论
 
-截至 **2026-04-17**：
+截至 **2026-04-18**：
 
 - `gogo-app` 已经可以在 **macOS** 上从当前仓库稳定构建出 `.app + .dmg`
 - `gogo-app` 的构建入口已经重构为**跨平台 Node 脚本**
@@ -41,6 +41,22 @@ npm run desktop:build
 
 它们都是**构建时生成物**，不应手工维护，也不应提交运行时内容。
 
+## 2.1 强制回归清单
+
+从 **2026-04-18** 起，`npm run desktop:build` 成功不再被视为“已通过桌面发包验证”。
+
+每次发包前，必须额外执行并记录：
+
+- bundle 资源完整性检查
+- `.app` 启动冒烟
+- RPC 会话冒烟
+- 模型切换与思考水平切换冒烟
+- 干净机器验证
+
+专项记录与检查项见：
+
+- [desktop-packaging-regressions.md](desktop-packaging-regressions.md)
+
 ## 3. 仓库中与打包相关的关键文件
 
 ### 3.1 必要源码
@@ -60,7 +76,8 @@ npm run desktop:build
 ### 3.2 平台无关的约定
 
 - companion knowledge-base 模板来自 `../knowledge-base/`
-- bundled `pi` 通过环境变量 `GOGO_DESKTOP_PI_BINARY` 指向某个平台对应 runtime 目录中的 launcher
+- bundled `pi` 优先通过环境变量 `GOGO_DESKTOP_PI_BINARY` 指向某个平台对应 runtime 目录中的 launcher
+- 若未显式传入 `GOGO_DESKTOP_PI_BINARY`，打包脚本会按平台尝试默认路径；找不到就直接 fail，不再静默产出一个“没带 Pi 的包”
 - 当前推荐把各平台 `pi` runtime 放在项目根目录旁的：
   - `../pi-runtime/macos-arm64/`
   - `../pi-runtime/windows-x64/`
@@ -86,6 +103,18 @@ npm run desktop:build
 在 `gogo-app/` 目录下运行：
 
 ```bash
+npm run desktop:build
+```
+
+当前 macOS arm64 默认会自动尝试：
+
+```bash
+../pi-runtime/macos-arm64/pi
+```
+
+如需覆盖默认来源，仍可显式指定：
+
+```bash
 GOGO_DESKTOP_PI_BINARY=../pi-runtime/macos-arm64/pi npm run desktop:build
 ```
 
@@ -107,6 +136,8 @@ GOGO_DESKTOP_PI_BINARY=../pi-runtime/macos-arm64/pi npm run desktop:build -- --d
 - macOS 上 bundled `pi` 不能裸分发上游 runtime 目录
 - 最终对外发布前，需要随 `gogo-app.app` 一起签名并纳入 notarization
 - 当前 companion knowledge-base 的模板 provision 已修复：若用户选定目录不完整，会自动补齐模板
+- 若 bundle 内缺少 `app/`、`backend-runtime/` 或 `pi-runtime/`，应用可能表现为启动即崩、RPC 找不到 `pi`、模型/思考水平设置失败；这些都必须在发包前按专项回归清单显式验证
+- 当前打包脚本已改为 fail-fast：若默认路径和 `GOGO_DESKTOP_PI_BINARY` 都无法提供可用的 Pi runtime，则构建会直接失败
 
 ## 5. Windows 打包
 

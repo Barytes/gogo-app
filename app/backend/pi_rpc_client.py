@@ -157,6 +157,41 @@ class PiRpcClient:
         logger.info("Pi RPC abort sent: id=%s", command_id)
         return True
 
+    async def send_extension_ui_response(
+        self,
+        *,
+        ui_request_id: str,
+        value: str | None = None,
+        confirmed: bool | None = None,
+        cancelled: bool = False,
+    ) -> bool:
+        request_id = str(ui_request_id or "").strip()
+        if not request_id:
+            raise PiRpcError("Missing extension UI request id.")
+
+        payload: dict[str, Any] = {
+            "type": "extension_ui_response",
+            "id": request_id,
+        }
+        if cancelled:
+            payload["cancelled"] = True
+        elif value is not None:
+            payload["value"] = str(value)
+        elif confirmed is not None:
+            payload["confirmed"] = bool(confirmed)
+        else:
+            raise PiRpcError("Extension UI response requires value, confirmed, or cancelled.")
+
+        await self._write_command(payload)
+        logger.info(
+            "Pi RPC extension UI response sent: id=%s cancelled=%s has_value=%s has_confirmed=%s",
+            request_id,
+            cancelled,
+            value is not None,
+            confirmed is not None,
+        )
+        return True
+
     async def new_session(
         self,
         *,

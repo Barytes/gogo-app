@@ -26,6 +26,9 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Vendored frontend assets
+app/frontend/assets/vendor/katex/fonts/*.ttf
+
 # Python
 __pycache__/
 *.pyc

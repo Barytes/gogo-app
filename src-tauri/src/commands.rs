@@ -1,4 +1,5 @@
 use std::process::Command;
+use std::path::PathBuf;
 
 use serde::Serialize;
 use tauri::{AppHandle, State};
@@ -31,6 +32,38 @@ pub async fn select_knowledge_base_directory(app: AppHandle) -> Result<Option<St
     let path = file_path
         .into_path()
         .map_err(|error| format!("failed to resolve selected directory path: {error}"))?;
+
+    Ok(Some(path.to_string_lossy().into_owned()))
+}
+
+#[tauri::command]
+pub async fn select_markdown_save_path(
+    app: AppHandle,
+    root_path: String,
+    default_file_name: String,
+) -> Result<Option<String>, String> {
+    let mut dialog = app.dialog().file();
+
+    let trimmed_root = root_path.trim();
+    if !trimmed_root.is_empty() {
+        dialog = dialog.set_directory(PathBuf::from(trimmed_root));
+    }
+
+    let trimmed_name = default_file_name.trim();
+    if !trimmed_name.is_empty() {
+        dialog = dialog.set_file_name(trimmed_name);
+    }
+
+    let Some(file_path) = dialog
+        .add_filter("Markdown", &["md"])
+        .blocking_save_file()
+    else {
+        return Ok(None);
+    };
+
+    let path = file_path
+        .into_path()
+        .map_err(|error| format!("无法解析保存路径：{error}"))?;
 
     Ok(Some(path.to_string_lossy().into_owned()))
 }

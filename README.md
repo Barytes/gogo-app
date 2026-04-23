@@ -155,6 +155,7 @@ Windows 首发安装介质目前先按 **NSIS `-setup.exe`** 收敛，不再把 
 - companion knowledge-base 已可随安装包资源提供，并在发布态默认 provision 到可写目录；但安装过程中让用户自行决定路径的链路尚未落地
 - 当前聊天与 OAuth 登录链路仍依赖 `pi`，但桌面版已经支持在启动阶段检测并安装到托管目录
 - 当前仅计划支持 API key 型 provider，以及 `pi` 已稳定支持且桌面引导已验证通过的 OAuth
+- 首发阶段 API key 仅保存在本机认证文件中，不自动上传；当前暂不接入 macOS Keychain / Windows Credential Manager
 - 自动更新尚未实现
 
 Tauri 设计与当前实现边界见：

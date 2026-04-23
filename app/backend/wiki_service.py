@@ -98,6 +98,36 @@ def get_page(relative_path: str) -> dict[str, Any]:
     return _page_record(_safe_wiki_path(relative_path), include_content=True)
 
 
+def create_page(relative_path: str, content: str = "") -> dict[str, Any]:
+    path = _safe_wiki_target_path(relative_path)
+    if path.exists():
+        raise FileExistsError(relative_path)
+
+    normalized_content = str(content).replace("\r\n", "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text(normalized_content, encoding="utf-8")
+    temp_path.replace(path)
+    return _page_record(path, include_content=True)
+
+
+def delete_page(relative_path: str) -> dict[str, Any]:
+    path = _safe_wiki_path(relative_path)
+    wiki_dir = _wiki_dir().resolve()
+    record = _page_record(path)
+    path.unlink()
+
+    for parent in path.parents:
+        if parent == wiki_dir:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+
+    return record
+
+
 def save_page(relative_path: str, content: str) -> dict[str, Any]:
     path = _safe_wiki_target_path(relative_path)
     if not path.exists():

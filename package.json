@@ -4,12 +4,15 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "clean": "node ./scripts/clean.mjs",
     "backend:dev": "node ./scripts/backend-dev.mjs",
     "desktop:dev": "tauri dev",
     "desktop:build": "node ./scripts/desktop-build.mjs"
   },
   "dependencies": {
-    "@mariozechner/pi-coding-agent": "latest"
+    "@mariozechner/pi-coding-agent": "latest",
+    "katex": "^0.16.45",
+    "marked": "^18.0.1"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.0.0"

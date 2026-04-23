@@ -158,6 +158,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             commands::desktop_runtime_info,
             commands::select_knowledge_base_directory,
+            commands::select_markdown_save_path,
             commands::open_path
         ])
         .setup(|app| -> Result<(), Box<dyn Error>> {

@@ -1,6 +1,6 @@
 # gogo-app Architecture
 
-**最后更新**: 2026-04-16
+**最后更新**: 2026-04-18
 
 > 本文档描述 `gogo-app` 这个应用产品本身的职责、边界与当前前后端架构。  
 > 项目级关系见 [gogo-project-architecture.md](gogo-project-architecture.md)。  
@@ -36,6 +36,7 @@
 - 运行时切换知识库
 - 设置面板中的 Provider / diagnostics 管理
 - 上传文件到知识库 `inbox/` 并驱动 ingest 工作流
+- 面向首发的 Pi 最小安全约束与本地安全审计
 
 ### 2.2 系统侧能力
 
@@ -44,6 +45,7 @@
 - 会话状态与历史恢复
 - 本地知识库目录读取与搜索 API
 - Model Provider profile 与 Pi extension 托管
+- Pi 安全模式、受信任工作区与托管 security extension
 - 按知识库隔离的 session 存储
 
 ## 3. 边界
@@ -82,9 +84,10 @@
 - `Wiki` / `Chat` 模式切换
 - 顶部知识库标题与设置面板
 - 会话列表、新建、删除、切换
-- 聊天框中的模型 / 思考切换
+- 聊天框中的模型 / 思考 / 安全模式切换
 - 文件上传与 Inbox 浮窗
 - 流式事件消费与消息渲染
+- 安全阻断弹窗与继续 steer 当前会话
 - Wiki/Raw 内容展示
 
 ## 4.2 后端
@@ -185,6 +188,23 @@ Browser
 - 知识库分组负责切换本地 knowledge-base 路径和展示最近使用列表
 - 模型与 Provider 分组负责管理 Provider profile，以及 Web 版的过渡态认证配置
 - 诊断分组负责集中展示知识库目录状态、session namespace、Pi runtime、provider 状态
+- 诊断分组继续展示安全模式、受信任工作区和本地安全审计状态，但不再承载安全模式切换入口
+
+## 5.3 首发前最小安全边界
+
+当前首发边界不是“Pi 可直接裸跑宿主机全部能力”，而是：
+
+- 默认工作区边界固定为当前 knowledge-base
+- 所有 Pi RPC 进程都会自动加载 gogo-app 托管的 `managed-security.ts`
+- 默认安全模式为“允许写文件”，允许在 knowledge-base 内 `write/edit`，默认禁止 `bash`
+- 聊天输入框控制区提供安全模式菜单，位置紧邻 `context window` 按钮
+- 当 Pi 因当前模式阻断某个 `bash / write / edit` 时，聊天区会弹出确认框，允许用户：
+  - 单次批准这一个命令 / 路径
+  - 或输入禁止理由，直接继续 steer 当前 Pi 会话
+- 当用户切到“允许执行命令”时，仍会保留对明显危险命令的默认阻断
+- 所有 `bash / write / edit` 的 allow / block 决策只写入本地安全日志，不自动上传
+
+更详细的边界说明见 [pi-security-boundary.md](pi-security-boundary.md)。
 
 聊天输入框区域还额外承载了两个和知识库工作流强相关的能力：
 
@@ -226,6 +246,7 @@ Browser
 - [agent-architecture.md](agent-architecture.md) - gogo-app 中 Agent 后端实现细节
 - [session-management.md](session-management.md) - gogo-app 中 Session 管理与恢复机制
 - [frontend-workbench-elements.md](frontend-workbench-elements.md) - gogo-app 前端页面元素、状态与交互实现说明
+- [pi-security-boundary.md](pi-security-boundary.md) - 首发前最小安全边界、默认限制与后续增强方向
 - [documentation-cleanup-audit-2026-04-15.md](documentation-cleanup-audit-2026-04-15.md) - 当前文档覆盖性审计结果与本轮清理范围
 - [desktop-packaging-options.md](desktop-packaging-options.md) - gogo-app 桌面应用封装方案评估与推荐路线
 - [tauri-migration-plan.md](tauri-migration-plan.md) - 当前 Tauri 桌面壳实现与后续迁移顺序

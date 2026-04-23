@@ -9,10 +9,21 @@ const quoteIntoChatEl = document.querySelector("#quote-into-chat");
 const historyBackEl = document.querySelector("#wiki-history-back");
 const historyForwardEl = document.querySelector("#wiki-history-forward");
 const editEl = document.querySelector("#wiki-edit");
+const deleteEl = document.querySelector("#wiki-delete");
+const createMdEl = document.querySelector("#wiki-create-md");
 const saveEl = document.querySelector("#wiki-save");
 const cancelEl = document.querySelector("#wiki-cancel");
+const insertIngestEl = document.querySelector("#wiki-insert-ingest");
 const modeWikiEl = document.querySelector("#mode-wiki");
+const modeInboxEl = document.querySelector("#mode-inbox");
 const modeRawEl = document.querySelector("#mode-raw");
+const markdownCreateOverlayEl = document.querySelector("#markdown-create-overlay");
+const markdownCreateRootLabelEl = document.querySelector("#markdown-create-root-label");
+const markdownCreatePathEl = document.querySelector("#markdown-create-path");
+const markdownCreateFeedbackEl = document.querySelector("#markdown-create-feedback");
+const markdownCreateSubmitEl = document.querySelector("#markdown-create-submit");
+const markdownCreateCancelEl = document.querySelector("#markdown-create-cancel");
+const markdownCreateCloseEl = document.querySelector("#markdown-create-close");
 
 let allPages = [];
 let activePath = "";
@@ -22,8 +33,13 @@ let activeRenderMode = "markdown";
 let wikiEditing = false;
 let wikiSaving = false;
 let wikiEditorOriginalContent = "";
+let markdownCreateMode = "wiki";
 const wikiBackHistory = [];
 const wikiForwardHistory = [];
+
+function isMarkdownWorkbenchMode(mode) {
+  return ["wiki", "raw", "inbox"].includes(String(mode || "").trim());
+}
 
 function setWikiEditorFeedback(message = "", isError = false) {
   if (!editorFeedbackEl) {
@@ -47,20 +63,53 @@ function confirmDiscardWikiEdits() {
   if (!hasUnsavedWikiChanges()) {
     return true;
   }
-  return window.confirm("当前 Wiki 页面有未保存的修改，确定放弃吗？");
+  return window.confirm("当前页面有未保存的修改，确定放弃吗？");
 }
 
 function canEditCurrentPage() {
-  return activeMode === "wiki" && activeRenderMode === "markdown" && Boolean(activePage?.path);
+  return isMarkdownWorkbenchMode(activeMode) && activeRenderMode === "markdown" && Boolean(activePage?.path);
+}
+
+function canCreateWikiPage() {
+  return isMarkdownWorkbenchMode(activeMode) && !wikiEditing;
+}
+
+function canDeleteCurrentPage() {
+  return isMarkdownWorkbenchMode(activeMode) && activeRenderMode === "markdown" && Boolean(activePage?.path) && !wikiEditing;
+}
+
+function canInsertIngestPrompt() {
+  return activeMode === "inbox" && Boolean(activePage?.path) && !wikiEditing;
+}
+
+function setMarkdownCreateFeedback(message = "", isError = false) {
+  if (!markdownCreateFeedbackEl) {
+    return;
+  }
+  const text = String(message || "").trim();
+  markdownCreateFeedbackEl.textContent = text;
+  markdownCreateFeedbackEl.classList.toggle("hidden", !text);
+  markdownCreateFeedbackEl.style.color = text ? (isError ? "#b1532f" : "#185c52") : "";
 }
 
 function syncWikiEditorActions() {
   const editable = canEditCurrentPage();
+  const showDelete = canDeleteCurrentPage();
+  const showInsertIngest = canInsertIngestPrompt();
   editEl?.classList.toggle("hidden", !editable || wikiEditing);
+  deleteEl?.classList.toggle("hidden", !showDelete);
+  createMdEl?.classList.toggle("hidden", !canCreateWikiPage());
   saveEl?.classList.toggle("hidden", !wikiEditing);
   cancelEl?.classList.toggle("hidden", !wikiEditing);
+  insertIngestEl?.classList.toggle("hidden", !showInsertIngest);
   if (editEl) {
     editEl.disabled = wikiSaving;
+  }
+  if (deleteEl) {
+    deleteEl.disabled = wikiSaving;
+  }
+  if (createMdEl) {
+    createMdEl.disabled = wikiSaving;
   }
   if (saveEl) {
     saveEl.disabled = wikiSaving;
@@ -69,9 +118,22 @@ function syncWikiEditorActions() {
   if (cancelEl) {
     cancelEl.disabled = wikiSaving;
   }
+  if (insertIngestEl) {
+    insertIngestEl.disabled = wikiSaving || !canInsertIngestPrompt();
+  }
   contentEl?.classList.toggle("hidden", wikiEditing);
   editorEl?.classList.toggle("hidden", !wikiEditing);
   quoteIntoChatEl?.classList.toggle("hidden", wikiEditing);
+  if (markdownCreateSubmitEl) {
+    markdownCreateSubmitEl.disabled = wikiSaving;
+    markdownCreateSubmitEl.textContent = wikiSaving ? "创建中..." : "创建并编辑";
+  }
+  if (markdownCreateCancelEl) {
+    markdownCreateCancelEl.disabled = wikiSaving;
+  }
+  if (markdownCreateCloseEl) {
+    markdownCreateCloseEl.disabled = wikiSaving;
+  }
 }
 
 function setWikiEditing(editing) {
@@ -85,6 +147,105 @@ function setWikiEditing(editing) {
     editorEl?.focus();
     editorEl?.setSelectionRange(editorEl.value.length, editorEl.value.length);
   }
+}
+
+function currentMarkdownRootLabel(mode = activeMode) {
+  const normalizedMode = isMarkdownWorkbenchMode(mode) ? mode : "wiki";
+  return `knowledge-base/${normalizedMode}/`;
+}
+
+function normalizeFsPath(path) {
+  return String(path || "").trim().replace(/\\/g, "/").replace(/\/+$/, "");
+}
+
+function currentMarkdownRootAbsolutePath(mode = activeMode) {
+  const kbPath = normalizeFsPath(window.WorkbenchUI?.getAppSettings?.()?.knowledge_base?.path || "");
+  if (!kbPath) {
+    return "";
+  }
+  const normalizedMode = isMarkdownWorkbenchMode(mode) ? mode : "wiki";
+  return `${kbPath}/${normalizedMode}`;
+}
+
+function relativePathFromSelectedFile(selectedPath, rootPath) {
+  const normalizedSelected = normalizeFsPath(selectedPath);
+  const normalizedRoot = normalizeFsPath(rootPath);
+  if (!normalizedSelected || !normalizedRoot) {
+    throw new Error("系统选择器没有返回有效路径。");
+  }
+  const lowerSelected = normalizedSelected.toLowerCase();
+  const lowerRoot = normalizedRoot.toLowerCase();
+  if (!lowerSelected.startsWith(`${lowerRoot}/`)) {
+    throw new Error(`请把文件保存在 ${currentMarkdownRootLabel(markdownCreateMode)} 下。`);
+  }
+  return normalizedSelected.slice(normalizedRoot.length + 1);
+}
+
+function buildInboxIngestPrompt(page = activePage) {
+  const title = String(page?.title || "").trim() || stripSourcePrefix(page?.path || "", "inbox") || "当前文件";
+  return `请ingest inbox中的《${title}》这页。`;
+}
+
+function beginWikiMutation() {
+  wikiSaving = true;
+  syncWikiEditorActions();
+}
+
+function finishWikiMutation() {
+  wikiSaving = false;
+  syncWikiEditorActions();
+}
+
+function closeCreateMarkdownDialog() {
+  if (!markdownCreateOverlayEl || wikiSaving) {
+    return;
+  }
+  markdownCreateOverlayEl.classList.add("hidden");
+  setMarkdownCreateFeedback("");
+}
+
+function openCreateMarkdownDialog() {
+  if (!markdownCreateOverlayEl || !markdownCreatePathEl || !canCreateWikiPage()) {
+    return;
+  }
+  markdownCreateMode = isMarkdownWorkbenchMode(activeMode) ? activeMode : "wiki";
+  if (markdownCreateRootLabelEl) {
+    markdownCreateRootLabelEl.textContent = currentMarkdownRootLabel(markdownCreateMode);
+  }
+  markdownCreatePathEl.value = defaultNewWikiPath(markdownCreateMode);
+  markdownCreateOverlayEl.classList.remove("hidden");
+  setMarkdownCreateFeedback("");
+  markdownCreatePathEl.focus();
+  markdownCreatePathEl.setSelectionRange(markdownCreatePathEl.value.length, markdownCreatePathEl.value.length);
+}
+
+async function openCreateMarkdownFlow() {
+  if (!canCreateWikiPage()) {
+    return;
+  }
+
+  markdownCreateMode = isMarkdownWorkbenchMode(activeMode) ? activeMode : "wiki";
+  const desktopBridge = window.GogoDesktop;
+  const rootPath = currentMarkdownRootAbsolutePath(markdownCreateMode);
+
+  if (desktopBridge?.isDesktopRuntime?.() && typeof desktopBridge.selectMarkdownSavePath === "function" && rootPath) {
+    try {
+      const result = await desktopBridge.selectMarkdownSavePath(rootPath, defaultNewWikiPath(markdownCreateMode));
+      if (result?.canceled) {
+        return;
+      }
+      const relativePath = normalizeNewWikiPath(relativePathFromSelectedFile(result?.path || "", rootPath));
+      await createMarkdownFile(markdownCreateMode, relativePath, { viaPicker: true });
+      return;
+    } catch (error) {
+      const message = String(error?.message || error);
+      setWikiEditorFeedback(message, true);
+      window.WorkbenchUI?.showToast?.(message);
+      return;
+    }
+  }
+
+  openCreateMarkdownDialog();
 }
 
 function escapeHtml(value) {
@@ -111,8 +272,12 @@ function decodeUriComponentSafe(value) {
 
 function formatPageLocationLabel(mode, path = "", category = "") {
   const modeLabel = String(mode || "").trim() || "wiki";
-  const normalizedPath = String(path || "").trim().replace(/^\/+/, "");
+  let normalizedPath = String(path || "").trim().replace(/^\/+/, "");
   const normalizedCategory = String(category || "").trim();
+
+  if (modeLabel === "inbox" && normalizedPath.startsWith("inbox/")) {
+    normalizedPath = normalizedPath.slice("inbox/".length);
+  }
 
   if (normalizedPath) {
     return `${modeLabel} / ${normalizedPath}`;
@@ -121,6 +286,70 @@ function formatPageLocationLabel(mode, path = "", category = "") {
     return `${modeLabel} / ${normalizedCategory}`;
   }
   return modeLabel;
+}
+
+function stripSourcePrefix(path, source = activeMode) {
+  const normalizedPath = String(path || "").trim().replace(/^\/+/, "");
+  const normalizedSource = String(source || "").trim();
+  if (normalizedSource === "inbox" && normalizedPath.startsWith("inbox/")) {
+    return normalizedPath.slice("inbox/".length);
+  }
+  if (normalizedSource === "raw" && normalizedPath.startsWith("raw/")) {
+    return normalizedPath.slice("raw/".length);
+  }
+  if (normalizedSource === "wiki" && normalizedPath.startsWith("wiki/")) {
+    return normalizedPath.slice("wiki/".length);
+  }
+  return normalizedPath;
+}
+
+async function extractErrorMessage(response) {
+  const payload = await response.json().catch(() => ({}));
+  return String(payload?.detail || `HTTP ${response.status}`);
+}
+
+function formatBytes(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number) || number < 0) {
+    return "—";
+  }
+  if (number < 1024) {
+    return `${number} B`;
+  }
+  if (number < 1024 * 1024) {
+    return `${(number / 1024).toFixed(1)} KB`;
+  }
+  return `${(number / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatModifiedAtLabel(rawValue) {
+  const text = String(rawValue || "").trim();
+  if (!text) {
+    return "—";
+  }
+  const date = new Date(text);
+  if (Number.isNaN(date.getTime())) {
+    return text;
+  }
+  return date.toLocaleString("zh-CN", {
+    year: "numeric",
+    month: "numeric",
+    day: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function humanizePageName(filename) {
+  const base = String(filename || "").trim().replace(/\.md$/i, "");
+  if (!base) {
+    return "Untitled";
+  }
+  return base
+    .replace(/[-_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
 function normalizePathSegments(segments) {
@@ -181,6 +410,10 @@ function resolveWorkbenchTarget(href, currentPath = "", currentSource = "wiki") 
     if (page) {
       return { source: "wiki", path: decodeUriComponentSafe(page) };
     }
+    const inbox = url.searchParams.get("inbox");
+    if (inbox) {
+      return { source: "inbox", path: decodeUriComponentSafe(inbox) };
+    }
     const raw = url.searchParams.get("raw");
     if (raw) {
       return { source: "raw", path: decodeUriComponentSafe(raw) };
@@ -208,6 +441,10 @@ function resolveWorkbenchTarget(href, currentPath = "", currentSource = "wiki") 
     if (page) {
       return { source: "wiki", path: decodeUriComponentSafe(page) };
     }
+    const inbox = params.get("inbox");
+    if (inbox) {
+      return { source: "inbox", path: decodeUriComponentSafe(inbox) };
+    }
     const raw = params.get("raw");
     if (raw) {
       return { source: "raw", path: decodeUriComponentSafe(raw) };
@@ -221,6 +458,10 @@ function resolveWorkbenchTarget(href, currentPath = "", currentSource = "wiki") 
 
   if (normalized.startsWith("raw/")) {
     return { source: "raw", path: normalized.slice(4) };
+  }
+
+  if (normalized.startsWith("inbox/")) {
+    return { source: "inbox", path: normalized };
   }
 
   const looksLikeRootWikiPath =
@@ -248,6 +489,9 @@ function resolveWorkbenchTarget(href, currentPath = "", currentSource = "wiki") 
 
   if (currentSource === "raw") {
     return { source: "raw", path: targetPath };
+  }
+  if (currentSource === "inbox") {
+    return { source: "inbox", path: targetPath.startsWith("inbox/") ? targetPath : `inbox/${targetPath}` };
   }
   if (targetPath.startsWith("raw/")) {
     return { source: "raw", path: targetPath.slice(4) };
@@ -396,12 +640,12 @@ function renderList(pages) {
         const button = document.createElement("button");
         button.type = "button";
         button.className = "wiki-list-item";
-        if (page.path === activePath) {
+        if (page.path === activePath && String(page.source || activeMode) === activeMode) {
           button.classList.add("active");
         }
-        button.innerHTML = `<strong>${page.title}</strong><small>${page.summary}</small>`;
+        button.innerHTML = `<strong>${escapeHtml(String(page.title || ""))}</strong><small>${escapeHtml(String(page.summary || ""))}</small>`;
         button.addEventListener("click", async () => {
-          await navigateToPage(page.path, activeMode, { recordHistory: true });
+          await navigateToPage(page.path, page.source || activeMode, { recordHistory: true });
         });
         li.appendChild(button);
         ul.appendChild(li);
@@ -414,6 +658,7 @@ function renderList(pages) {
 function setMode(mode) {
   activeMode = mode;
   modeWikiEl?.classList.toggle("active", mode === "wiki");
+  modeInboxEl?.classList.toggle("active", mode === "inbox");
   modeRawEl?.classList.toggle("active", mode === "raw");
 }
 
@@ -422,6 +667,12 @@ function currentListEndpoint(query = "") {
     return query
       ? `/api/raw/search?q=${encodeURIComponent(query)}`
       : "/api/raw/files";
+  }
+
+  if (activeMode === "inbox") {
+    return query
+      ? `/api/inbox/search?q=${encodeURIComponent(query)}`
+      : "/api/inbox/files";
   }
 
   return query
@@ -434,6 +685,11 @@ function listEndpointForMode(mode, query = "") {
     return query
       ? `/api/raw/search?q=${encodeURIComponent(query)}`
       : "/api/raw/files";
+  }
+  if (mode === "inbox") {
+    return query
+      ? `/api/inbox/search?q=${encodeURIComponent(query)}`
+      : "/api/inbox/files";
   }
   return query
     ? `/api/wiki/search?q=${encodeURIComponent(query)}`
@@ -469,14 +725,21 @@ function resolveIndexedPath(path, source = "wiki") {
 }
 
 function currentDetailEndpoint(path) {
-  return activeMode === "raw"
-    ? `/api/raw/file?path=${encodeURIComponent(path)}`
-    : `/api/wiki/page?path=${encodeURIComponent(path)}`;
+  if (activeMode === "raw") {
+    return `/api/raw/file?path=${encodeURIComponent(path)}`;
+  }
+  if (activeMode === "inbox") {
+    return `/api/inbox/file?path=${encodeURIComponent(path)}`;
+  }
+  return `/api/wiki/page?path=${encodeURIComponent(path)}`;
 }
 
 async function fetchPages(query = "") {
   const url = currentListEndpoint(query);
   const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
   const data = await response.json();
   return data.items || [];
 }
@@ -484,8 +747,57 @@ async function fetchPages(query = "") {
 async function fetchPagesForMode(mode, query = "") {
   const url = listEndpointForMode(mode, query);
   const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(await extractErrorMessage(response));
+  }
   const data = await response.json();
   return data.items || [];
+}
+
+function renderInboxMetaSummary(data) {
+  const fields = [
+    ["路径", String(data.path || "").replace(/^inbox\//, "") || "—"],
+    ["类型", String(data.type_label || data.content_type || "—")],
+    ["状态", String(data.status_label || "—")],
+    ["大小", formatBytes(data.size_bytes ?? data.size)],
+    ["更新于", formatModifiedAtLabel(data.modified_at)],
+  ];
+
+  const rows = fields
+    .map(([label, value]) => `<div class="summary-meta-row"><strong>${escapeHtml(label)}</strong><span>${escapeHtml(value)}</span></div>`)
+    .join("");
+  return `
+    <div class="summary-box inbox-detail-summary">
+      <p>当前正在浏览知识库 Inbox 中的文件。</p>
+      <div class="summary-meta-grid">
+        ${rows}
+      </div>
+    </div>
+  `;
+}
+
+function renderModeEmptyState(mode, query = "") {
+  const modeLabel = mode === "inbox" ? "Inbox" : mode === "raw" ? "Raw" : "Wiki";
+  const hasQuery = Boolean(String(query || "").trim());
+
+  activePath = "";
+  activePage = null;
+  activeRenderMode = mode === "wiki" ? "markdown" : "binary";
+  wikiSaving = false;
+  wikiEditing = false;
+  wikiEditorOriginalContent = "";
+
+  categoryEl.textContent = modeLabel;
+  titleEl.textContent = hasQuery ? `没有匹配到 ${modeLabel} 内容` : `${modeLabel} 里还没有内容`;
+  contentEl.innerHTML = `<p class="empty-state">${escapeHtml(
+    hasQuery ? "试试换个关键词。" : (mode === "inbox" ? "当前知识库的 inbox 里还没有文件。" : "当前视图还没有可显示的内容。")
+  )}</p>`;
+  if (editorEl) {
+    editorEl.value = "";
+  }
+  setWikiEditorFeedback("");
+  syncWikiEditorActions();
+  renderList(allPages);
 }
 
 function renderPageData(data) {
@@ -499,8 +811,11 @@ function renderPageData(data) {
   categoryEl.textContent = formatPageLocationLabel(activeMode, data.path, data.category);
   titleEl.textContent = data.title;
 
+  const inboxSummary = "";
+
   if (activeRenderMode === "markdown") {
-    contentEl.innerHTML = markdownToHtml(data.content || "");
+    contentEl.innerHTML = `${inboxSummary}${markdownToHtml(data.content || "")}`;
+    window.GogoMath?.renderElement?.(contentEl);
     contentEl.querySelectorAll("a").forEach((a) => {
       const href = a.getAttribute("href") || "";
       const destination = resolveWorkbenchTarget(href, data.path, activeMode);
@@ -513,9 +828,10 @@ function renderPageData(data) {
       });
     });
   } else if (activeRenderMode === "text") {
-    contentEl.innerHTML = `<pre><code>${escapeHtml(data.content || "")}</code></pre>`;
+    contentEl.innerHTML = `${inboxSummary}<pre><code>${escapeHtml(data.content || "")}</code></pre>`;
   } else if (activeRenderMode === "pdf") {
     contentEl.innerHTML = `
+      ${inboxSummary}
       <div class="pdf-preview-shell">
         <iframe
           class="pdf-preview-frame"
@@ -524,12 +840,24 @@ function renderPageData(data) {
         ></iframe>
       </div>
     `;
+  } else if (activeRenderMode === "image") {
+    contentEl.innerHTML = `
+      ${inboxSummary}
+      <div class="pdf-preview-shell">
+        <img
+          class="pdf-preview-frame"
+          src="${escapeHtml(data.preview_url || data.download_url || "#")}"
+          alt="${escapeHtml(data.title || "Image Preview")}"
+        />
+      </div>
+    `;
   } else {
     contentEl.innerHTML = `
+      ${inboxSummary}
       <div class="summary-box">
-        <p>这个 raw 材料不是文本内容，当前页面不直接内嵌全文展示。</p>
+        <p>这个文件不是文本内容，当前页面不直接内嵌全文展示。</p>
         <p>文件类型：${escapeHtml(data.content_type || "unknown")}</p>
-        <p>文件大小：${data.size} bytes</p>
+        <p>文件大小：${escapeHtml(formatBytes(data.size ?? data.size_bytes))}</p>
       </div>
     `;
   }
@@ -543,11 +871,18 @@ function renderPageData(data) {
   renderList(allPages);
 
   const params = new URLSearchParams(window.location.search);
-  params.set(activeMode === "raw" ? "raw" : "page", data.path);
   if (activeMode === "raw") {
+    params.set("raw", data.path);
     params.delete("page");
-  } else {
+    params.delete("inbox");
+  } else if (activeMode === "inbox") {
+    params.set("inbox", data.path);
+    params.delete("page");
     params.delete("raw");
+  } else {
+    params.set("page", data.path);
+    params.delete("raw");
+    params.delete("inbox");
   }
   window.history.replaceState({}, "", `/${params.toString() ? `?${params.toString()}` : ""}`);
 }
@@ -574,6 +909,14 @@ async function navigateToPage(path, source = "wiki", options = {}) {
   const previousSearch = searchEl?.value || "";
 
   if (wikiEditing && !confirmDiscardWikiEdits()) {
+    updateWikiHistoryButtons();
+    return false;
+  }
+
+  if (!resolvedPath) {
+    setMode(source);
+    allPages = await fetchPagesForMode(source, "");
+    renderModeEmptyState(source);
     updateWikiHistoryButtons();
     return false;
   }
@@ -627,21 +970,41 @@ async function navigateToPage(path, source = "wiki", options = {}) {
   }
 
   updateWikiHistoryButtons();
+  if (document.body.classList.contains("layout-chat")) {
+    setSidebarVisibility(false);
+  }
   return true;
+}
+
+function defaultPathForMode(mode, pages = []) {
+  if (!Array.isArray(pages) || !pages.length) {
+    return "";
+  }
+  if (mode === "wiki") {
+    return pages.find((page) => String(page?.path || "") === "index.md")?.path || pages[0]?.path || "";
+  }
+  return pages[0]?.path || "";
 }
 
 async function bootstrap() {
   try {
     const params = new URLSearchParams(window.location.search);
+    const initialInbox = params.get("inbox");
     const initialRaw = params.get("raw");
     const initialPage = params.get("page");
-    setMode(initialRaw ? "raw" : "wiki");
+    const initialMode = initialInbox ? "inbox" : initialRaw ? "raw" : "wiki";
+    setMode(initialMode);
 
     allPages = await fetchPages();
     renderList(allPages);
 
-    const initialPath = initialRaw || initialPage || (activeMode === "raw" ? allPages[0]?.path : "index.md");
-    await navigateToPage(initialPath, activeMode, { recordHistory: false });
+    const initialPath = initialInbox || initialRaw || initialPage || defaultPathForMode(initialMode, allPages);
+    if (initialPath) {
+      await navigateToPage(initialPath, initialMode, { recordHistory: false });
+    } else {
+      renderModeEmptyState(initialMode);
+      updateWikiHistoryButtons();
+    }
   } catch (error) {
     categoryEl.textContent = "unavailable";
     titleEl.textContent = "暂时无法读取内容";
@@ -655,17 +1018,18 @@ async function saveCurrentWikiPage() {
     return;
   }
 
-  wikiSaving = true;
+  beginWikiMutation();
   setWikiEditorFeedback("正在保存...");
-  syncWikiEditorActions();
 
   try {
-    const response = await fetch(`/api/wiki/page?path=${encodeURIComponent(activePage.path)}`, {
+    const response = await fetch("/api/markdown-file", {
       method: "PATCH",
       headers: {
         "Content-Type": "application/json",
       },
       body: JSON.stringify({
+        source: activeMode,
+        path: activePage.path,
         content: currentEditorContent(),
       }),
     });
@@ -675,14 +1039,193 @@ async function saveCurrentWikiPage() {
     }
 
     const currentQuery = searchEl?.value.trim() || "";
-    allPages = await fetchPagesForMode("wiki", currentQuery);
+    allPages = await fetchPagesForMode(activeMode, currentQuery);
     renderPageData(data);
     setWikiEditorFeedback("");
     window.WorkbenchUI?.showToast?.("已保存。");
   } catch (error) {
-    wikiSaving = false;
+    finishWikiMutation();
     setWikiEditorFeedback(`保存失败：${String(error?.message || error)}`, true);
-    syncWikiEditorActions();
+  }
+}
+
+async function deleteCurrentWikiPage() {
+  if (!canDeleteCurrentPage() || !activePage?.path || wikiSaving) {
+    return;
+  }
+
+  const title = String(activePage?.title || activePage?.path || "当前页面").trim();
+  if (!window.confirm(`确定删除《${title}》吗？这个操作无法撤销。`)) {
+    return;
+  }
+
+  beginWikiMutation();
+  setWikiEditorFeedback("正在删除...");
+
+  try {
+    const response = await fetch(
+      `/api/markdown-file?source=${encodeURIComponent(activeMode)}&path=${encodeURIComponent(activePage.path)}`,
+      {
+        method: "DELETE",
+      }
+    );
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(String(payload?.detail || `HTTP ${response.status}`));
+    }
+
+    const currentMode = activeMode;
+    allPages = await fetchPagesForMode(currentMode, "");
+    const nextPath = defaultPathForMode(currentMode, allPages);
+    if (nextPath) {
+      await navigateToPage(nextPath, currentMode, { recordHistory: false });
+    } else {
+      setMode(currentMode);
+      renderModeEmptyState(currentMode);
+      updateWikiHistoryButtons();
+    }
+    window.WorkbenchUI?.showToast?.("已删除 Markdown。");
+  } catch (error) {
+    finishWikiMutation();
+    setWikiEditorFeedback(`删除失败：${String(error?.message || error)}`, true);
+  }
+}
+
+function defaultNewWikiPath(mode = activeMode) {
+  const currentPath = stripSourcePrefix(activePage?.path || "", mode);
+  const segments = currentPath.split("/").filter(Boolean);
+  const shouldReuseCurrentDirectory = mode === activeMode && segments.length > 1;
+  const directory = shouldReuseCurrentDirectory ? segments.slice(0, -1).join("/") : "";
+  return directory ? `${directory}/untitled.md` : "untitled.md";
+}
+
+function normalizeNewWikiPath(rawValue) {
+  const candidate = String(rawValue || "").trim().replace(/\\/g, "/").replace(/^\/+/, "");
+  if (!candidate) {
+    throw new Error("请输入 Markdown 文件路径。");
+  }
+
+  const rawSegments = candidate.split("/");
+  if (rawSegments.some((segment) => !segment.trim())) {
+    throw new Error("路径里不能包含空的目录层级。");
+  }
+  if (rawSegments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error("路径里不能包含 . 或 ..。");
+  }
+
+  const segments = rawSegments.map((segment) => segment.trim());
+  if (segments.some((segment) => segment.startsWith("."))) {
+    throw new Error("文件名或目录名不能以 . 开头。");
+  }
+  if (segments.some((segment) => /[<>:"|?*]/.test(segment))) {
+    throw new Error("文件路径里包含不支持的字符。");
+  }
+
+  const normalized = segments.join("/");
+  if (!normalized.toLowerCase().endsWith(".md")) {
+    throw new Error("只支持创建 .md 文件。");
+  }
+  return normalized;
+}
+
+function defaultNewWikiContent(path) {
+  const filename = String(path || "").split("/").pop() || "untitled.md";
+  return `# ${humanizePageName(filename)}\n\n`;
+}
+
+async function createMarkdownFile(source, relativePath, options = {}) {
+  const { viaPicker = false } = options;
+
+  beginWikiMutation();
+  setWikiEditorFeedback("");
+  setMarkdownCreateFeedback(viaPicker ? "" : "正在创建...");
+
+  try {
+    const normalizedSource = isMarkdownWorkbenchMode(source) ? source : "wiki";
+    const newPath = stripSourcePrefix(relativePath, normalizedSource);
+    const navigationPath = normalizedSource === "inbox" ? `inbox/${newPath}` : newPath;
+    const response = await fetch("/api/markdown-file", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        source: normalizedSource,
+        path: newPath,
+        content: defaultNewWikiContent(newPath),
+      }),
+    });
+    const payload = await response.json().catch(() => ({}));
+
+    if (searchEl) {
+      searchEl.value = "";
+    }
+    if (normalizedSource === activeMode) {
+      allPages = await fetchPagesForMode(normalizedSource, "");
+      renderList(allPages);
+    }
+
+    if (response.status === 409) {
+      const opened = await navigateToPage(navigationPath, normalizedSource, { recordHistory: true });
+      if (opened) {
+        closeCreateMarkdownDialog();
+        setWikiEditing(true);
+      } else {
+        finishWikiMutation();
+        if (!viaPicker) {
+          setMarkdownCreateFeedback("Markdown 已存在，但暂时没能打开它。", true);
+        }
+        return;
+      }
+      window.WorkbenchUI?.showToast?.("Markdown 已存在，已打开现有文件。");
+      return;
+    }
+
+    if (!response.ok) {
+      throw new Error(String(payload?.detail || `HTTP ${response.status}`));
+    }
+
+    const opened = await navigateToPage(navigationPath, normalizedSource, { recordHistory: true });
+    if (opened) {
+      closeCreateMarkdownDialog();
+      setWikiEditing(true);
+    } else {
+      finishWikiMutation();
+      if (!viaPicker) {
+        setMarkdownCreateFeedback("文件已经创建成功，但暂时没能打开它。", true);
+      }
+      return;
+    }
+    window.WorkbenchUI?.showToast?.("已创建 Markdown。");
+  } catch (error) {
+    finishWikiMutation();
+    const message = `创建失败：${String(error?.message || error)}`;
+    if (!viaPicker) {
+      setMarkdownCreateFeedback(message, true);
+    }
+    throw error instanceof Error ? error : new Error(message);
+  }
+}
+
+async function createCurrentWikiPage() {
+  if (!canCreateWikiPage() || wikiSaving || !markdownCreatePathEl) {
+    return;
+  }
+
+  let newPath = "";
+  try {
+    newPath = normalizeNewWikiPath(markdownCreatePathEl.value);
+  } catch (error) {
+    const message = String(error?.message || error);
+    setMarkdownCreateFeedback(message, true);
+    markdownCreatePathEl.focus();
+    return;
+  }
+
+  try {
+    await createMarkdownFile(markdownCreateMode, newPath, { viaPicker: false });
+  } catch (_error) {
+    // Feedback is already handled by createMarkdownFile.
   }
 }
 
@@ -696,17 +1239,39 @@ modeWikiEl?.addEventListener("click", async () => {
   if (activeMode === "wiki") {
     return;
   }
-  await navigateToPage("index.md", "wiki", { recordHistory: true });
+  const wikiPages = await fetchPagesForMode("wiki", "");
+  const path = defaultPathForMode("wiki", wikiPages);
+  if (path) {
+    await navigateToPage(path, "wiki", { recordHistory: true });
+    return;
+  }
+  await navigateToPage("", "wiki", { recordHistory: true });
+});
+
+modeInboxEl?.addEventListener("click", async () => {
+  if (activeMode === "inbox") {
+    return;
+  }
+  const inboxPages = await fetchPagesForMode("inbox", "");
+  const path = defaultPathForMode("inbox", inboxPages);
+  if (path) {
+    await navigateToPage(path, "inbox", { recordHistory: true });
+    return;
+  }
+  await navigateToPage("", "inbox", { recordHistory: true });
 });
 
 modeRawEl?.addEventListener("click", async () => {
   if (activeMode === "raw") {
     return;
   }
-  const rawPages = await fetchPagesForMode("raw");
-  if (rawPages.length) {
-    await navigateToPage(rawPages[0].path, "raw", { recordHistory: true });
+  const rawPages = await fetchPagesForMode("raw", "");
+  const path = defaultPathForMode("raw", rawPages);
+  if (path) {
+    await navigateToPage(path, "raw", { recordHistory: true });
+    return;
   }
+  await navigateToPage("", "raw", { recordHistory: true });
 });
 
 editEl?.addEventListener("click", () => {
@@ -730,6 +1295,14 @@ saveEl?.addEventListener("click", async () => {
   await saveCurrentWikiPage();
 });
 
+deleteEl?.addEventListener("click", async () => {
+  await deleteCurrentWikiPage();
+});
+
+createMdEl?.addEventListener("click", async () => {
+  await openCreateMarkdownFlow();
+});
+
 editorEl?.addEventListener("input", () => {
   if (!wikiEditing) {
     return;
@@ -737,11 +1310,56 @@ editorEl?.addEventListener("input", () => {
   setWikiEditorFeedback("");
 });
 
+insertIngestEl?.addEventListener("click", () => {
+  if (!canInsertIngestPrompt()) {
+    return;
+  }
+  window.WorkbenchUI?.ensureChatVisible?.();
+  window.ChatWorkbench?.injectPrompt?.(buildInboxIngestPrompt(activePage), false);
+  window.ChatWorkbench?.focusInput?.();
+});
+
+markdownCreateCancelEl?.addEventListener("click", () => {
+  closeCreateMarkdownDialog();
+});
+
+markdownCreateCloseEl?.addEventListener("click", () => {
+  closeCreateMarkdownDialog();
+});
+
+markdownCreateOverlayEl?.addEventListener("click", (event) => {
+  if (event.target === markdownCreateOverlayEl) {
+    closeCreateMarkdownDialog();
+  }
+});
+
+markdownCreatePathEl?.addEventListener("keydown", async (event) => {
+  if (event.key === "Enter" && !event.shiftKey) {
+    event.preventDefault();
+    await createCurrentWikiPage();
+    return;
+  }
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeCreateMarkdownDialog();
+  }
+});
+
+markdownCreatePathEl?.addEventListener("input", () => {
+  setMarkdownCreateFeedback("");
+});
+
+markdownCreateSubmitEl?.addEventListener("click", async () => {
+  await createCurrentWikiPage();
+});
+
 if (quoteIntoChatEl) {
   quoteIntoChatEl.addEventListener("click", () => {
     if (!activePage) {
       return;
     }
+
+    window.WorkbenchUI?.ensureChatVisible?.();
 
     window.dispatchEvent(
       new CustomEvent("wiki:quote", {
@@ -754,10 +1372,30 @@ if (quoteIntoChatEl) {
     );
 
     if (window.ChatWorkbench?.focusInput) {
-      window.WorkbenchUI?.ensureChatVisible?.();
       window.ChatWorkbench.focusInput();
     }
   });
+}
+
+function setSidebarVisibility(visible) {
+  const sidebarEl = document.querySelector(".wiki-sidebar");
+  const panelEl = document.querySelector(".workbench-wiki");
+  const openBtn = document.querySelector("#toggle-wiki-sidebar-open");
+  const closeBtn = document.querySelector("#toggle-wiki-sidebar-close");
+  const shouldShow = Boolean(visible);
+  if (!sidebarEl || !panelEl) {
+    return;
+  }
+
+  sidebarEl.classList.toggle("wiki-sidebar-visible", shouldShow);
+  panelEl.classList.toggle("wiki-sidebar-only", shouldShow && document.body.classList.contains("layout-chat"));
+
+  if (openBtn) {
+    openBtn.classList.toggle("hidden", shouldShow);
+  }
+  if (closeBtn) {
+    closeBtn.classList.toggle("hidden", !shouldShow);
+  }
 }
 
 window.WikiWorkbench = {
@@ -766,58 +1404,27 @@ window.WikiWorkbench = {
     return navigateToPage(path, source, { recordHistory: true });
   },
   showSidebar: () => {
-    const sidebarEl = document.querySelector(".wiki-sidebar");
-    const openBtn = document.querySelector("#toggle-wiki-sidebar-open");
-    const closeBtn = document.querySelector("#toggle-wiki-sidebar-close");
-    if (!sidebarEl) return;
-
-    sidebarEl.classList.add("wiki-sidebar-visible");
-    if (openBtn) openBtn.classList.add("hidden");
-    if (closeBtn) closeBtn.classList.remove("hidden");
+    setSidebarVisibility(true);
   },
   hideSidebar: () => {
-    const sidebarEl = document.querySelector(".wiki-sidebar");
-    const openBtn = document.querySelector("#toggle-wiki-sidebar-open");
-    const closeBtn = document.querySelector("#toggle-wiki-sidebar-close");
-    if (!sidebarEl) return;
-
-    sidebarEl.classList.remove("wiki-sidebar-visible");
-    if (openBtn) openBtn.classList.remove("hidden");
-    if (closeBtn) closeBtn.classList.add("hidden");
+    setSidebarVisibility(false);
   },
 };
 
 // Toggle sidebar buttons
 const toggleSidebarOpenBtn = document.querySelector("#toggle-wiki-sidebar-open");
 toggleSidebarOpenBtn?.addEventListener("click", () => {
-  console.log("[wiki] toggle-wiki-sidebar-open clicked");
-  const sidebarEl = document.querySelector(".wiki-sidebar");
-  if (sidebarEl) {
-    sidebarEl.classList.add("wiki-sidebar-visible");
-    console.log("[wiki] wiki-sidebar-visible added", sidebarEl.className);
-  }
-  if (toggleSidebarOpenBtn) toggleSidebarOpenBtn.classList.add("hidden");
-  const closeBtn = document.querySelector("#toggle-wiki-sidebar-close");
-  if (closeBtn) closeBtn.classList.remove("hidden");
+  setSidebarVisibility(true);
 });
 
 const toggleSidebarCloseBtn = document.querySelector("#toggle-wiki-sidebar-close");
 toggleSidebarCloseBtn?.addEventListener("click", () => {
-  console.log("[wiki] toggle-wiki-sidebar-close clicked");
-  const sidebarEl = document.querySelector(".wiki-sidebar");
-  if (sidebarEl) {
-    sidebarEl.classList.remove("wiki-sidebar-visible");
-    console.log("[wiki] wiki-sidebar-visible removed", sidebarEl.className);
-  }
-  if (toggleSidebarCloseBtn) toggleSidebarCloseBtn.classList.add("hidden");
-  const openBtn = document.querySelector("#toggle-wiki-sidebar-open");
-  if (openBtn) openBtn.classList.remove("hidden");
+  setSidebarVisibility(false);
 });
 
 // Hide wiki panel button (Chat mode)
 const hideWikiPanelChatBtn = document.querySelector("#hide-wiki-panel-chat");
 hideWikiPanelChatBtn?.addEventListener("click", () => {
-  console.log("[wiki] hide-wiki-panel-chat clicked");
   window.WorkbenchUI?.hideWiki?.();
 });
 

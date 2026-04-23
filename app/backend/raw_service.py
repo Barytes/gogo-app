@@ -43,6 +43,16 @@ def _safe_raw_path(relative_path: str) -> Path:
     return candidate
 
 
+def _safe_raw_target_path(relative_path: str) -> Path:
+    raw_root = _raw_dir().resolve()
+    candidate = (raw_root / relative_path).resolve()
+    if raw_root not in candidate.parents and candidate != raw_root:
+        raise ValueError("Path must stay inside knowledge-base/raw.")
+    if candidate.suffix.lower() != ".md":
+        raise ValueError("Only markdown files are supported.")
+    return candidate
+
+
 def _guess_content_type(path: Path) -> str:
     guessed, _ = mimetypes.guess_type(path.name)
     return guessed or "application/octet-stream"
@@ -115,6 +125,51 @@ def list_raw_files() -> list[dict[str, Any]]:
 
 def get_raw_file(relative_path: str) -> dict[str, Any]:
     return _raw_record(_safe_raw_path(relative_path), include_content=True)
+
+
+def create_raw_file(relative_path: str, content: str = "") -> dict[str, Any]:
+    path = _safe_raw_target_path(relative_path)
+    if path.exists():
+        raise FileExistsError(relative_path)
+
+    normalized_content = str(content).replace("\r\n", "\n")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text(normalized_content, encoding="utf-8")
+    temp_path.replace(path)
+    return _raw_record(path, include_content=True)
+
+
+def delete_raw_file(relative_path: str) -> dict[str, Any]:
+    path = _safe_raw_target_path(relative_path)
+    if not path.exists():
+        raise FileNotFoundError(relative_path)
+
+    raw_root = _raw_dir().resolve()
+    record = _raw_record(path)
+    path.unlink()
+
+    for parent in path.parents:
+        if parent == raw_root:
+            break
+        try:
+            parent.rmdir()
+        except OSError:
+            break
+
+    return record
+
+
+def save_raw_file(relative_path: str, content: str) -> dict[str, Any]:
+    path = _safe_raw_target_path(relative_path)
+    if not path.exists():
+        raise FileNotFoundError(relative_path)
+
+    normalized_content = str(content).replace("\r\n", "\n")
+    temp_path = path.with_name(f".{path.name}.tmp")
+    temp_path.write_text(normalized_content, encoding="utf-8")
+    temp_path.replace(path)
+    return _raw_record(path, include_content=True)
 
 
 def search_raw_files(query: str, limit: int = 20) -> list[dict[str, Any]]:

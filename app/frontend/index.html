@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Research KB MVP</title>
+    <link rel="stylesheet" href="/assets/vendor/katex/katex.min.css?v=20260418-01" />
     <link rel="stylesheet" href="/assets/styles.css?v=20260417-03" />
   </head>
   <body>
@@ -82,6 +83,9 @@
                 <button id="mode-wiki" class="source-switch-button active" type="button">
                   Wiki
                 </button>
+                <button id="mode-inbox" class="source-switch-button" type="button">
+                  Inbox
+                </button>
                 <button id="mode-raw" class="source-switch-button" type="button">
                   Raw
                 </button>
@@ -131,11 +135,20 @@
                 <button id="wiki-edit" class="button button-secondary" type="button">
                   编辑
                 </button>
+                <button id="wiki-delete" class="button button-danger-subtle" type="button">
+                  删除
+                </button>
+                <button id="wiki-create-md" class="button button-secondary" type="button">
+                  新建 Markdown
+                </button>
                 <button id="wiki-save" class="button button-primary hidden" type="button">
                   保存
                 </button>
                 <button id="wiki-cancel" class="button button-secondary hidden" type="button">
                   取消
+                </button>
+                <button id="wiki-insert-ingest" class="button button-secondary hidden" type="button">
+                  插入 ingest
                 </button>
                 <button id="quote-into-chat" class="button button-secondary" type="button">
                   引用
@@ -228,18 +241,63 @@
                 </div>
               </div>
 	              <form id="chat-form" class="chat-form">
-	                <input
-	                  id="chat-upload-input"
-	                  type="file"
-	                  hidden
-	                  multiple
-	                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
-	                />
-	                <div class="chat-input-shell">
-	                  <div class="chat-composer-controls">
-	                    <button
-	                      id="chat-upload-button"
-	                      class="chat-control-button chat-control-icon-button"
+		                <input
+		                  id="chat-upload-input"
+		                  type="file"
+		                  hidden
+		                  multiple
+		                  accept=".pdf,.md,.txt,.doc,.docx,.ppt,.pptx,.xls,.xlsx,.csv,.tsv,.json,.yaml,.yml,.png,.jpg,.jpeg,.webp"
+		                />
+		                <div class="chat-input-shell">
+		                  <div id="chat-security-modal" class="chat-security-popover hidden" aria-hidden="true">
+		                    <section class="chat-security-dialog" role="dialog" aria-labelledby="chat-security-modal-title">
+		                      <div class="chat-security-dialog-header">
+		                        <div>
+		                          <p class="chat-security-dialog-eyebrow">Pi 安全确认</p>
+		                          <h2 id="chat-security-modal-title">这次操作被当前安全模式拦住了</h2>
+		                        </div>
+		                        <button id="chat-security-close-button" class="chat-security-close-button" type="button" aria-label="关闭安全确认弹窗">×</button>
+		                      </div>
+		                      <div class="chat-security-dialog-body">
+		                        <div class="chat-security-summary-grid">
+		                          <div class="chat-security-summary-card">
+		                            <p class="chat-security-summary-label">当前模式</p>
+		                            <p id="chat-security-modal-mode" class="chat-security-summary-value">—</p>
+		                          </div>
+		                          <div class="chat-security-summary-card">
+		                            <p class="chat-security-summary-label">是否可放行</p>
+		                            <p id="chat-security-modal-approval" class="chat-security-summary-value">—</p>
+		                          </div>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <p class="chat-security-detail-label">Pi 正要执行的操作</p>
+		                          <pre id="chat-security-modal-command" class="chat-security-command-preview">—</pre>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <p class="chat-security-detail-label">拦截原因</p>
+		                          <p id="chat-security-modal-reason" class="chat-security-reason-text">—</p>
+		                        </div>
+		                        <div class="chat-security-detail-block">
+		                          <label for="chat-security-steer-input" class="chat-security-detail-label">如果要禁止，请告诉 Pi 为什么不能这样做</label>
+		                          <textarea
+		                            id="chat-security-steer-input"
+		                            class="chat-security-steer-input"
+		                            rows="3"
+		                            placeholder="例如：不要动宿主机上的配置文件，请只在当前 knowledge-base 内完成。"
+		                          ></textarea>
+		                        </div>
+		                        <p id="chat-security-modal-feedback" class="chat-security-feedback hidden" aria-live="polite"></p>
+		                      </div>
+		                      <div class="chat-security-dialog-actions">
+		                        <button id="chat-security-approve-button" class="button button-secondary" type="button">允许这一次</button>
+		                        <button id="chat-security-deny-button" class="button button-primary" type="button">禁止并告知 Pi</button>
+		                      </div>
+		                    </section>
+		                  </div>
+		                  <div class="chat-composer-controls" role="toolbar" aria-label="聊天输入工具栏">
+		                    <button
+		                      id="chat-upload-button"
+		                      class="chat-control-button chat-control-icon-button"
 	                      type="button"
 	                      aria-label="上传文件"
 	                      title="上传文件"
@@ -280,7 +338,19 @@
 	                    >
 	                      /
 	                    </button>
-	                    <div id="chat-context-shell" class="chat-context-shell hidden">
+	                    <div class="chat-control-menu-shell menu-align-end">
+	                      <button
+	                        id="chat-security-button"
+	                        class="chat-control-button"
+	                        type="button"
+	                        aria-haspopup="menu"
+	                        aria-expanded="false"
+	                      >
+	                        安全模式
+	                      </button>
+	                      <div id="chat-security-menu" class="chat-control-menu hidden" role="menu"></div>
+	                    </div>
+	                    <div id="chat-context-shell" class="chat-context-shell menu-align-end hidden">
 	                      <button
 	                        id="chat-context-button"
 	                        class="chat-control-button chat-control-icon-button chat-context-button"
@@ -348,7 +418,6 @@
 	          </div>
 	        </div>
 	        <p id="inbox-panel-feedback" class="inbox-panel-feedback hidden" aria-live="polite"></p>
-	        <p class="inbox-panel-drop-hint">把文件拖到这个面板，或拖到右下角 Inbox 按钮，也可以直接上传。</p>
 	        <div id="inbox-file-list" class="inbox-file-list"></div>
 	        <p id="inbox-file-empty" class="inbox-file-empty hidden">当前知识库的 inbox 里还没有文件。</p>
 	      </aside>
@@ -584,7 +653,7 @@
 		                  <div>
 		                    <p class="settings-subtitle">系统诊断</p>
 		                    <p class="settings-help">
-		                      这里会汇总当前知识库、Pi RPC、会话目录和默认模型配置，方便直接判断当前工作台是不是连在正确的环境上。
+		                      这里会汇总当前知识库、Pi RPC、会话目录、默认模型配置和 Pi 最小安全约束，方便直接判断当前工作台是不是连在正确的环境上。
 		                    </p>
 		                  </div>
 		                  <div class="settings-actions">
@@ -613,6 +682,11 @@
 		                      <h3>Provider 默认值</h3>
 		                      <dl id="diagnostics-provider-list" class="settings-diagnostics-list"></dl>
 		                    </article>
+		                    <article class="settings-diagnostics-card settings-diagnostics-card-security">
+		                      <h3>安全边界</h3>
+		                      <div id="diagnostics-security-list" class="settings-security-summary"></div>
+		                      <div id="diagnostics-security-events" class="settings-security-events"></div>
+		                    </article>
 		                  </div>
 		                </div>
 		              </section>
@@ -620,12 +694,53 @@
 		          </div>
 		        </section>
 		      </div>
-	      <div id="settings-toast-viewport" class="settings-toast-viewport" aria-live="polite" aria-atomic="true"></div>
-	    </div>
 
-	    <script src="/assets/desktop-bridge.js?v=20260417-03"></script>
-	    <script src="/assets/workbench.js?v=20260417-03"></script>
-	    <script src="/assets/wiki.js?v=20260415-12"></script>
-	    <script src="/assets/chat.js?v=20260415-12"></script>
+      <div id="markdown-create-overlay" class="settings-overlay hidden">
+        <section class="settings-panel markdown-create-panel" role="dialog" aria-modal="true" aria-labelledby="markdown-create-title">
+          <div class="settings-panel-header">
+            <div>
+              <p class="eyebrow">Markdown</p>
+              <h2 id="markdown-create-title">新建 Markdown</h2>
+            </div>
+            <button id="markdown-create-close" class="button button-secondary" type="button">关闭</button>
+          </div>
+          <div class="markdown-create-layout">
+            <div class="settings-section">
+              <p class="settings-help">
+                当前会把文件创建到
+                <code id="markdown-create-root-label" class="markdown-create-root-label">knowledge-base/wiki/</code>
+                下。
+              </p>
+              <div class="settings-field">
+                <label for="markdown-create-path">文件路径</label>
+                <input
+                  id="markdown-create-path"
+                  class="settings-input settings-monospace"
+                  type="text"
+                  placeholder="例如：notes/untitled.md"
+                  autocomplete="off"
+                  spellcheck="false"
+                />
+              </div>
+              <p class="settings-help">支持多级目录；路径必须以 <code>.md</code> 结尾。</p>
+              <p id="markdown-create-feedback" class="settings-feedback hidden" aria-live="polite"></p>
+            </div>
+          </div>
+          <div class="markdown-create-actions">
+            <button id="markdown-create-cancel" class="button button-secondary" type="button">取消</button>
+            <button id="markdown-create-submit" class="button button-primary" type="button">创建并编辑</button>
+          </div>
+        </section>
+      </div>
+		      <div id="settings-toast-viewport" class="settings-toast-viewport" aria-live="polite" aria-atomic="true"></div>
+		    </div>
+	
+	    <script src="/assets/vendor/katex/katex.min.js?v=20260418-01"></script>
+    <script src="/assets/vendor/katex/auto-render.min.js?v=20260418-01"></script>
+    <script src="/assets/math-render.js?v=20260418-01"></script>
+    <script src="/assets/desktop-bridge.js?v=20260417-03"></script>
+    <script src="/assets/workbench.js?v=20260417-03"></script>
+    <script src="/assets/wiki.js?v=20260415-12"></script>
+    <script src="/assets/chat.js?v=20260415-12"></script>
   </body>
 </html>

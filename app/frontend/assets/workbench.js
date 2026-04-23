@@ -6,6 +6,8 @@ const hideWikiButtonEl = document.querySelector("#hide-wiki-panel");
 const hideWikiPanelChatButtonEl = document.querySelector("#hide-wiki-panel-chat");
 const showChatButtonEl = document.querySelector("#show-chat-panel");
 const showWikiButtonEl = document.querySelector("#show-wiki-panel");
+const workbenchWikiPanelEl = document.querySelector(".workbench-wiki");
+const unifiedChatPanelEl = document.querySelector(".unified-chat-panel");
 const knowledgeBaseNameEl = document.querySelector("#knowledge-base-name");
 const openSettingsButtonEl = document.querySelector("#open-settings-panel");
 const closeSettingsButtonEl = document.querySelector("#close-settings-panel");
@@ -99,9 +101,16 @@ const diagnosticsKbListEl = document.querySelector("#diagnostics-kb-list");
 const diagnosticsPiListEl = document.querySelector("#diagnostics-pi-list");
 const diagnosticsSessionListEl = document.querySelector("#diagnostics-session-list");
 const diagnosticsProviderListEl = document.querySelector("#diagnostics-provider-list");
+const diagnosticsSecurityListEl = document.querySelector("#diagnostics-security-list");
+const diagnosticsSecurityEventsEl = document.querySelector("#diagnostics-security-events");
 const openDiagnosticsKbButtonEl = document.querySelector("#open-diagnostics-kb-button");
 const openDiagnosticsLogButtonEl = document.querySelector("#open-diagnostics-log-button");
 const exportDiagnosticsSummaryButtonEl = document.querySelector("#export-diagnostics-summary-button");
+const securityModeSelectEl = document.querySelector("#security-mode-select");
+const securityModeHelpEl = document.querySelector("#security-mode-help");
+const saveSecuritySettingsButtonEl = document.querySelector("#save-security-settings-button");
+const openSecurityLogButtonEl = document.querySelector("#open-security-log-button");
+const securitySettingsFeedbackEl = document.querySelector("#security-settings-feedback");
 
 const STORAGE_KEY = "research-kb-workbench-layout";
 const DESKTOP_PI_LOGIN_POLL_INTERVAL_MS = 2500;
@@ -109,8 +118,8 @@ const DESKTOP_PI_LOGIN_TIMEOUT_MS = 120000;
 
 const workbenchState = {
   layout: "wiki",
-  chatVisible: true,
-  wikiVisible: true,
+  chatVisible: false,
+  wikiVisible: false,
 };
 let appSettings = null;
 let providerFormMode = "api";
@@ -215,11 +224,6 @@ function applyWorkbenchState() {
 
 function setLayout(layout) {
   workbenchState.layout = layout === "chat" ? "chat" : "wiki";
-  if (workbenchState.layout === "wiki") {
-    workbenchState.wikiVisible = true;
-  } else {
-    workbenchState.chatVisible = true;
-  }
   applyWorkbenchState();
   saveWorkbenchState();
 }
@@ -254,6 +258,25 @@ function showWiki() {
   saveWorkbenchState();
 }
 
+function isFloatingChatOpen() {
+  return workbenchState.layout === "wiki" && workbenchState.chatVisible;
+}
+
+function isFloatingWikiOpen() {
+  return workbenchState.layout === "chat" && workbenchState.wikiVisible;
+}
+
+function shouldIgnoreFloatingPanelDismiss(target) {
+  return Boolean(
+    target.closest("#layout-mode-wiki") ||
+      target.closest("#layout-mode-chat") ||
+      target.closest("#show-chat-panel") ||
+      target.closest("#show-wiki-panel") ||
+      target.closest("#quote-into-chat") ||
+      target.closest("#wiki-insert-ingest")
+  );
+}
+
 loadWorkbenchState();
 applyWorkbenchState();
 
@@ -264,6 +287,18 @@ hideWikiButtonEl?.addEventListener("click", hideWiki);
 hideWikiPanelChatButtonEl?.addEventListener("click", hideWiki);
 showChatButtonEl?.addEventListener("click", showChat);
 showWikiButtonEl?.addEventListener("click", showWiki);
+document.addEventListener("click", (event) => {
+  const target = event.target;
+  if (!(target instanceof Element) || shouldIgnoreFloatingPanelDismiss(target)) {
+    return;
+  }
+  if (isFloatingChatOpen() && unifiedChatPanelEl && !unifiedChatPanelEl.contains(target)) {
+    hideChat();
+  }
+  if (isFloatingWikiOpen() && workbenchWikiPanelEl && !workbenchWikiPanelEl.contains(target)) {
+    hideWiki();
+  }
+});
 settingsNavButtonEls.forEach((button) => {
   button.addEventListener("click", () => {
     setActiveSettingsSection(button.dataset.settingsSection || "knowledge-base");
@@ -340,6 +375,10 @@ function setProviderFeedback(message, isError = false) {
 
 function setDiagnosticsFeedback(message, isError = false) {
   setFeedback(diagnosticsFeedbackEl, message, isError);
+}
+
+function setSecurityFeedback(message, isError = false) {
+  setFeedback(securitySettingsFeedbackEl, message, isError);
 }
 
 function setCapabilityFeedback(message, isError = false) {
@@ -949,6 +988,7 @@ function clearSettingsFeedback() {
   setCapabilityFeedback("");
   setProviderFeedback("");
   setDiagnosticsFeedback("");
+  setSecurityFeedback("");
 }
 
 function capabilityItems() {
@@ -1526,6 +1566,366 @@ function diagnosticsPiStatusLabel(runtime, install) {
   return "未就绪";
 }
 
+function securitySettings() {
+  return diagnosticsState.data?.security || {};
+}
+
+function diagnosticsSecurityModeTone(mode) {
+  const normalized = String(mode || "").trim().toLowerCase();
+  if (normalized === "readonly") {
+    return "is-readonly";
+  }
+  if (normalized === "full-access") {
+    return "is-full-access";
+  }
+  return "is-workspace-write";
+}
+
+function diagnosticsSecurityDecisionMeta(item) {
+  const decision = String(item?.decision || "").trim().toLowerCase();
+  if (decision === "block") {
+    return {
+      tone: "is-block",
+      label: "BLOCK",
+      detail: "已拦截",
+      description: "该操作被当前安全边界拦截。",
+    };
+  }
+  if (decision === "allow-approved") {
+    return {
+      tone: "is-allow",
+      label: "ALLOW",
+      detail: "批准后",
+      description: "该操作在你确认后已放行。",
+    };
+  }
+  if (decision === "allow-inline") {
+    return {
+      tone: "is-allow",
+      label: "ALLOW",
+      detail: "面板确认",
+      description: "该操作在面板中确认后已放行。",
+    };
+  }
+  return {
+    tone: "is-allow",
+    label: "ALLOW",
+    detail: "已放行",
+    description: "该操作已通过当前安全边界。",
+  };
+}
+
+function diagnosticsSecurityTimestamp(value) {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "刚刚";
+  }
+  const parsed = new Date(raw);
+  if (Number.isNaN(parsed.getTime())) {
+    return raw;
+  }
+  try {
+    return parsed.toLocaleString("zh-CN", {
+      month: "numeric",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch (_error) {
+    return raw;
+  }
+}
+
+function diagnosticsSecurityDisplayPath(value, trustedWorkspaces) {
+  const rawPath = String(value || "").trim();
+  if (!rawPath) {
+    return "";
+  }
+  const normalizedPath = rawPath.replace(/\\/g, "/");
+  const roots = Array.isArray(trustedWorkspaces) ? trustedWorkspaces : [];
+  for (const workspace of roots) {
+    const rootPath = String(workspace?.path || "").trim().replace(/\\/g, "/");
+    if (!rootPath) {
+      continue;
+    }
+    if (normalizedPath === rootPath) {
+      return workspace.label || rootPath;
+    }
+    if (normalizedPath.startsWith(`${rootPath}/`)) {
+      const relative = normalizedPath.slice(rootPath.length + 1);
+      return workspace.label ? `${workspace.label}/${relative}` : relative;
+    }
+  }
+  return normalizedPath;
+}
+
+function diagnosticsSecurityTarget(item, trustedWorkspaces) {
+  const command = String(item?.command || "").trim();
+  if (command) {
+    return command;
+  }
+  const resolvedPath = String(item?.resolved_path || item?.resolvedPath || item?.path || "").trim();
+  return diagnosticsSecurityDisplayPath(resolvedPath, trustedWorkspaces);
+}
+
+function diagnosticsSecurityReason(item, meta) {
+  const explicitReason = String(item?.reason || "").trim();
+  if (explicitReason) {
+    return explicitReason;
+  }
+  return meta.description;
+}
+
+function renderSecuritySummary(security) {
+  if (!diagnosticsSecurityListEl) {
+    return;
+  }
+
+  const workspaces = Array.isArray(security?.trusted_workspaces) ? security.trusted_workspaces : [];
+  diagnosticsSecurityListEl.innerHTML = "";
+
+  const hero = document.createElement("section");
+  hero.className = `settings-security-hero ${diagnosticsSecurityModeTone(security?.mode)}`.trim();
+
+  const heroTop = document.createElement("div");
+  heroTop.className = "settings-security-mode-row";
+
+  const modePill = document.createElement("span");
+  modePill.className = `settings-security-mode-pill ${diagnosticsSecurityModeTone(security?.mode)}`.trim();
+  modePill.textContent = diagnosticsValue(security?.mode_label, "未设置");
+  heroTop.appendChild(modePill);
+
+  const supportPill = document.createElement("span");
+  supportPill.className = "settings-security-inline-pill";
+  supportPill.textContent = security?.supports_interactive_approval ? "支持交互式确认" : "仅按模式执行";
+  heroTop.appendChild(supportPill);
+
+  hero.appendChild(heroTop);
+
+  const description = document.createElement("p");
+  description.className = "settings-security-description";
+  description.textContent =
+    diagnosticsValue(security?.mode_description, "当前是应用层最小安全约束，不是容器级强沙箱。");
+  hero.appendChild(description);
+
+  if (security?.boundary_note) {
+    const note = document.createElement("p");
+    note.className = "settings-security-note";
+    note.textContent = security.boundary_note;
+    hero.appendChild(note);
+  }
+
+  diagnosticsSecurityListEl.appendChild(hero);
+
+  const metaGrid = document.createElement("div");
+  metaGrid.className = "settings-security-meta-grid";
+
+  const buildMetaCard = (label, bodyBuilder) => {
+    const card = document.createElement("section");
+    card.className = "settings-security-meta-card";
+
+    const heading = document.createElement("p");
+    heading.className = "settings-security-meta-label";
+    heading.textContent = label;
+    card.appendChild(heading);
+
+    bodyBuilder(card);
+    metaGrid.appendChild(card);
+  };
+
+  buildMetaCard("受信任工作区", (card) => {
+    if (!workspaces.length) {
+      const empty = document.createElement("p");
+      empty.className = "settings-security-meta-value";
+      empty.textContent = "当前还没有受信任工作区。";
+      card.appendChild(empty);
+      return;
+    }
+    const list = document.createElement("div");
+    list.className = "settings-security-workspaces";
+    workspaces.forEach((item) => {
+      const entry = document.createElement("div");
+      entry.className = "settings-security-workspace-item";
+
+      const labelEl = document.createElement("strong");
+      labelEl.className = "settings-security-workspace-label";
+      labelEl.textContent = diagnosticsValue(item?.label, "未命名工作区");
+      entry.appendChild(labelEl);
+
+      const pathEl = document.createElement("p");
+      pathEl.className = "settings-security-workspace-path";
+      pathEl.textContent = diagnosticsValue(item?.path);
+      entry.appendChild(pathEl);
+
+      list.appendChild(entry);
+    });
+    card.appendChild(list);
+  });
+
+  buildMetaCard("托管扩展", (card) => {
+    const value = document.createElement("p");
+    value.className = "settings-security-meta-value settings-security-monospace";
+    value.textContent = diagnosticsValue(security?.managed_extension_path);
+    card.appendChild(value);
+  });
+
+  buildMetaCard("安全日志", (card) => {
+    const value = document.createElement("p");
+    value.className = "settings-security-meta-value settings-security-monospace";
+    value.textContent = diagnosticsValue(security?.log_path);
+    card.appendChild(value);
+  });
+
+  buildMetaCard("审批缓存", (card) => {
+    const value = document.createElement("p");
+    value.className = "settings-security-meta-value settings-security-monospace";
+    value.textContent = diagnosticsValue(security?.approvals_path);
+    card.appendChild(value);
+  });
+
+  diagnosticsSecurityListEl.appendChild(metaGrid);
+}
+
+function renderSecurityControls() {
+  const security = securitySettings();
+  const availableModes = Array.isArray(security.available_modes) ? security.available_modes : [];
+
+  if (securityModeSelectEl) {
+    const previousValue = String(securityModeSelectEl.value || "").trim();
+    securityModeSelectEl.innerHTML = "";
+    availableModes.forEach((item) => {
+      const option = document.createElement("option");
+      option.value = item.id || "";
+      option.textContent = item.label || item.id || "";
+      securityModeSelectEl.appendChild(option);
+    });
+    securityModeSelectEl.value = security.mode || previousValue || availableModes[0]?.id || "";
+  }
+
+  const selectedMode =
+    availableModes.find((item) => item.id === String(securityModeSelectEl?.value || security.mode || "")) ||
+    availableModes[0] ||
+    {};
+
+  if (securityModeHelpEl) {
+    const helpParts = [];
+    if (selectedMode.description) {
+      helpParts.push(selectedMode.description);
+    }
+    if (security.boundary_note) {
+      helpParts.push(security.boundary_note);
+    }
+    securityModeHelpEl.textContent =
+      helpParts.join(" ") || "当前是应用层最小安全约束，不是容器级强沙箱。";
+  }
+}
+
+function renderSecurityEvents(events, security) {
+  if (!diagnosticsSecurityEventsEl) {
+    return;
+  }
+  diagnosticsSecurityEventsEl.innerHTML = "";
+  const items = Array.isArray(events) ? events : [];
+  const header = document.createElement("div");
+  header.className = "settings-security-events-header";
+
+  const title = document.createElement("h4");
+  title.className = "settings-security-events-title";
+  title.textContent = "最近审计记录";
+  header.appendChild(title);
+
+  const count = document.createElement("span");
+  count.className = "settings-security-events-count";
+  count.textContent = items.length ? `最近 ${items.length} 条` : "暂无记录";
+  header.appendChild(count);
+
+  diagnosticsSecurityEventsEl.appendChild(header);
+
+  if (!items.length) {
+    const empty = document.createElement("div");
+    empty.className = "settings-security-empty";
+    empty.textContent = "最近还没有 bash / write / edit 审计记录。";
+    diagnosticsSecurityEventsEl.appendChild(empty);
+    return;
+  }
+
+  const list = document.createElement("div");
+  list.className = "settings-security-event-list";
+
+  items.forEach((item) => {
+    const meta = diagnosticsSecurityDecisionMeta(item);
+    const eventCard = document.createElement("article");
+    eventCard.className = `settings-security-event ${meta.tone}`.trim();
+
+    const top = document.createElement("div");
+    top.className = "settings-security-event-top";
+
+    const tags = document.createElement("div");
+    tags.className = "settings-security-event-tags";
+
+    const decisionBadge = document.createElement("span");
+    decisionBadge.className = `settings-security-event-badge ${meta.tone}`.trim();
+    decisionBadge.textContent = meta.label;
+    tags.appendChild(decisionBadge);
+
+    const toolBadge = document.createElement("span");
+    toolBadge.className = "settings-security-event-badge is-tool";
+    toolBadge.textContent = diagnosticsValue(item?.tool, "tool");
+    tags.appendChild(toolBadge);
+
+    const detailBadge = document.createElement("span");
+    detailBadge.className = "settings-security-event-badge is-detail";
+    detailBadge.textContent = meta.detail;
+    tags.appendChild(detailBadge);
+
+    const modeLabel = String(item?.current_mode_label || security?.mode_label || "").trim();
+    if (modeLabel) {
+      const modeBadge = document.createElement("span");
+      modeBadge.className = "settings-security-event-badge is-mode";
+      modeBadge.textContent = modeLabel;
+      tags.appendChild(modeBadge);
+    }
+
+    top.appendChild(tags);
+
+    const time = document.createElement("time");
+    time.className = "settings-security-event-time";
+    if (item?.timestamp) {
+      time.dateTime = String(item.timestamp);
+    }
+    time.textContent = diagnosticsSecurityTimestamp(item?.timestamp);
+    top.appendChild(time);
+
+    eventCard.appendChild(top);
+
+    const target = document.createElement("p");
+    target.className = "settings-security-event-target";
+    target.textContent =
+      diagnosticsSecurityTarget(item, security?.trusted_workspaces) || "未提供目标路径";
+    eventCard.appendChild(target);
+
+    const resolvedPath = String(item?.resolved_path || item?.resolvedPath || item?.path || "").trim();
+    if (item?.command && resolvedPath) {
+      const secondary = document.createElement("p");
+      secondary.className = "settings-security-event-subtarget";
+      secondary.textContent = `目标：${diagnosticsSecurityDisplayPath(
+        resolvedPath,
+        security?.trusted_workspaces
+      )}`;
+      eventCard.appendChild(secondary);
+    }
+
+    const reason = document.createElement("p");
+    reason.className = "settings-security-event-reason";
+    reason.textContent = diagnosticsSecurityReason(item, meta);
+    eventCard.appendChild(reason);
+
+    list.appendChild(eventCard);
+  });
+
+  diagnosticsSecurityEventsEl.appendChild(list);
+}
+
 function renderDiagnostics() {
   const payload = diagnosticsState.data;
   const health = payload?.health || {};
@@ -1535,6 +1935,7 @@ function renderDiagnostics() {
   const defaults = providers.defaults || {};
   const piRuntime = payload?.pi_runtime || {};
   const piInstall = payload?.pi_install || piInstallStatus();
+  const security = payload?.security || {};
 
   if (diagnosticsStatusChipsEl) {
     diagnosticsStatusChipsEl.innerHTML = "";
@@ -1544,6 +1945,7 @@ function renderDiagnostics() {
       `Pi 状态：${health.runtime_options_ok ? "已连通" : "拉取失败"}`,
       `Pi 安装：${piInstall.install_in_progress ? "安装中" : piInstall.installed ? "已安装" : "待安装"}`,
       `知识库：${diagnosticsValue(knowledgeBase.name)}`,
+      `安全模式：${diagnosticsValue(security.mode_label)}`,
     ];
     chips.forEach((label) => {
       const chip = document.createElement("span");
@@ -1591,6 +1993,9 @@ function renderDiagnostics() {
     ["gogo 管理数", diagnosticsValue(providers.managed_count)],
     ["已连 OAuth", diagnosticsValue(providers.oauth_connected_count)],
   ]);
+  renderSecuritySummary(security);
+  renderSecurityControls();
+  renderSecurityEvents(security.recent_events, security);
   renderDiagnosticsActions();
 }
 
@@ -1598,12 +2003,19 @@ function renderDiagnosticsActions() {
   const payload = diagnosticsState.data;
   const knowledgeBasePath = String(payload?.knowledge_base?.path || appSettings?.knowledge_base?.path || "").trim();
   const logPath = String(payload?.pi_install?.install_log_path || "").trim();
+  const securityLogPath = String(payload?.security?.log_path || "").trim();
 
   if (openDiagnosticsKbButtonEl) {
     openDiagnosticsKbButtonEl.disabled = !knowledgeBasePath;
   }
   if (openDiagnosticsLogButtonEl) {
     openDiagnosticsLogButtonEl.disabled = !logPath;
+  }
+  if (saveSecuritySettingsButtonEl) {
+    saveSecuritySettingsButtonEl.disabled = diagnosticsState.loading || !securityModeSelectEl;
+  }
+  if (openSecurityLogButtonEl) {
+    openSecurityLogButtonEl.disabled = !securityLogPath;
   }
   if (exportDiagnosticsSummaryButtonEl) {
     exportDiagnosticsSummaryButtonEl.disabled = diagnosticsState.loading || !payload;
@@ -2372,6 +2784,7 @@ function buildDiagnosticsSummary() {
   const piInstall = payload.pi_install || {};
   const providers = payload.providers || {};
   const defaults = providers.defaults || {};
+  const security = payload.security || {};
   return [
     `生成时间: ${diagnosticsValue(payload.generated_at)}`,
     "",
@@ -2399,6 +2812,12 @@ function buildDiagnosticsSummary() {
     `默认模型: ${diagnosticsValue(defaults.model)}`,
     `Profile 数: ${diagnosticsValue(providers.profile_count)}`,
     `OAuth 已连通: ${diagnosticsValue(providers.oauth_connected_count)}`,
+    "",
+    `[安全]`,
+    `安全模式: ${diagnosticsValue(security.mode_label || security.mode)}`,
+    `受信任工作区: ${diagnosticsValue(Array.isArray(security.trusted_workspaces) ? security.trusted_workspaces.map((item) => item.path).join(" | ") : "")}`,
+    `安全日志: ${diagnosticsValue(security.log_path)}`,
+    `说明: ${diagnosticsValue(security.boundary_note)}`,
   ].join("\n");
 }
 
@@ -2438,6 +2857,37 @@ async function exportDiagnosticsSummary() {
   downloadTextFile(`gogo-diagnostics-${timestamp}.txt`, text);
   setDiagnosticsFeedback("");
   showSettingsToast("诊断摘要已导出到本地下载目录。");
+}
+
+async function saveSecuritySettings() {
+  const mode = String(securityModeSelectEl?.value || "").trim();
+  if (!mode) {
+    setSecurityFeedback("请选择一个安全模式。", true);
+    return;
+  }
+  if (saveSecuritySettingsButtonEl) {
+    saveSecuritySettingsButtonEl.disabled = true;
+  }
+  setSecurityFeedback("正在保存 Pi 安全模式...");
+  try {
+    const response = await fetch("/api/settings/security", {
+      method: "PATCH",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({ mode }),
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      throw new Error(payload?.detail || `HTTP ${response.status}`);
+    }
+    setSecurityFeedback(payload?.detail || "Pi 安全模式已更新。");
+    await loadDiagnostics(true);
+  } catch (error) {
+    setSecurityFeedback(`保存失败：${error.message}`, true);
+  } finally {
+    renderDiagnosticsActions();
+  }
 }
 
 function cancelDesktopPiLoginPolling() {
@@ -2876,6 +3326,21 @@ openDiagnosticsLogButtonEl?.addEventListener("click", async () => {
     setDiagnosticsFeedback("");
   } catch (error) {
     setDiagnosticsFeedback(`打开失败：${error.message}`, true);
+  }
+});
+securityModeSelectEl?.addEventListener("change", () => {
+  renderSecurityControls();
+  setSecurityFeedback("");
+});
+saveSecuritySettingsButtonEl?.addEventListener("click", async () => {
+  await saveSecuritySettings();
+});
+openSecurityLogButtonEl?.addEventListener("click", async () => {
+  try {
+    await openDesktopPath(diagnosticsState.data?.security?.log_path || "", "安全日志");
+    setSecurityFeedback("");
+  } catch (error) {
+    setSecurityFeedback(`打开失败：${error.message}`, true);
   }
 });
 exportDiagnosticsSummaryButtonEl?.addEventListener("click", async () => {
