@@ -266,6 +266,17 @@ function isFloatingWikiOpen() {
   return workbenchState.layout === "chat" && workbenchState.wikiVisible;
 }
 
+function eventTargetsNode(event, node) {
+  if (!node || !event) {
+    return false;
+  }
+  if (typeof event.composedPath === "function") {
+    return event.composedPath().includes(node);
+  }
+  const target = event.target;
+  return target instanceof Element ? node.contains(target) : false;
+}
+
 function shouldIgnoreFloatingPanelDismiss(target) {
   return Boolean(
     target.closest("#layout-mode-wiki") ||
@@ -292,10 +303,10 @@ document.addEventListener("click", (event) => {
   if (!(target instanceof Element) || shouldIgnoreFloatingPanelDismiss(target)) {
     return;
   }
-  if (isFloatingChatOpen() && unifiedChatPanelEl && !unifiedChatPanelEl.contains(target)) {
+  if (isFloatingChatOpen() && unifiedChatPanelEl && !eventTargetsNode(event, unifiedChatPanelEl)) {
     hideChat();
   }
-  if (isFloatingWikiOpen() && workbenchWikiPanelEl && !workbenchWikiPanelEl.contains(target)) {
+  if (isFloatingWikiOpen() && workbenchWikiPanelEl && !eventTargetsNode(event, workbenchWikiPanelEl)) {
     hideWiki();
   }
 });

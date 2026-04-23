@@ -4,7 +4,7 @@
 > 项目级架构参考：[gogo-project-architecture.md](docs/gogo-project-architecture.md)  
 > 应用架构参考：[gogo-app-architecture.md](docs/gogo-app-architecture.md)
 
-**最后更新**: 2026-04-23
+**最后更新**: 2026-04-24
 
 ## 相关任务文档
 
@@ -80,12 +80,28 @@
   - 结论：保留 `consulted_pages`，但将其明确为应用层 UI 元数据，只表示“后端预检索到并展示给前端的候选页面”，不是 knowledge-base 规范的一部分，也不是主 session 链路的权威 grounding 元数据。
   - 当前策略：主产品路径继续以 session + Pi 原生会话 + 工具调用为主；固定检索与 `consulted_pages` 仅服务于 legacy no-session 兼容路径。
 
+- [ ] 规划 Agent runtime 抽象，支持“外接本地 coding agent + bundled Pi fallback”
+  - [ ] 将当前 Pi-only 架构提升为 runtime manager + adapter 结构，而不是让 Agent 层默认等于 `pi --mode rpc`
+  - [ ] 明确 bundled Pi、system Pi、ACP agent 三类 runtime profile 的配置模型、诊断模型与切换语义
+  - [ ] 评估并设计 ACP 接入层，优先对接 `initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel`、`session/update` 与 permission request 映射
+  - [ ] 明确 Claude Code、Codex 等外部 agent 的接入边界：默认通过 ACP-compatible agent 或 bridge 接入，不在 `gogo-app` 中直接实现各家私有协议
+  - [ ] 保留 bundled Pi runtime 作为默认体验和 fallback 路径，避免外接 agent 配置失败时整条聊天主链路不可用
+  - 参考文档：`docs/workspace-and-agent-runtime-refactor-plan.md`
+
 ### 1. gogo-app 与外部 knowledge-base 的连接质量
 
 - [x] 明确 `KNOWLEDGE_BASE_DIR` 接入体验
 - [x] 提升知识库切换/初始化时的错误提示
 - [x] 明确 gogo-app 如何发现并展示当前连接的 knowledge-base 信息
 - 结论：后端已支持运行时读取与切换知识库目录，前端设置面板可展示当前知识库名称、路径与最近使用列表；切换失败时会明确提示“目录不存在”“缺少 `wiki/` / `raw/` 子目录”等错误；切换知识库后会按知识库 namespace 隔离 session 存储，避免不同知识库的会话互相混淆。
+
+- [ ] 规划内容工作区抽象，解除 `wiki/raw` 目录强绑定
+  - [ ] 将当前“知识库目录”抽象为更通用的 workspace descriptor，至少区分 `knowledge-base` 与 `markdown-folder` 两种模式
+  - [ ] 明确 `markdown-folder` 模式第一阶段支持范围：Markdown 浏览、搜索、编辑、新建、删除
+  - [ ] 明确 `raw / inbox / skills / schemas / AGENTS.md` 在普通 Markdown 工作区中的降级策略，避免 UI 与后端继续假设这些目录恒定存在
+  - [ ] 调整启动引导、diagnostics、桌面 provision 文案与错误提示，使其围绕“工作区”而不是固定 `knowledge-base/wiki/raw` 结构
+  - [ ] 评估新的 workspace 抽象对安全边界、session namespace 和桌面 companion knowledge-base 路径选择的影响
+  - 参考文档：`docs/workspace-and-agent-runtime-refactor-plan.md`
 
 ### 2. 桌面应用封装
 
@@ -481,12 +497,13 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-04-24 | 新增 `docs/workspace-and-agent-runtime-refactor-plan.md`，记录两条下一阶段结构性重构：内容工作区抽象，以及“ACP 外接 agent + bundled Pi fallback”的 Agent runtime 抽象；同步补充 `docs/index.md` 与 `TASKS.md` |
+| 2026-04-23 | 将一组新的工作台交互改动加入任务列表：模式切换不自动弹出 Chat/Wiki、三类浮窗支持点外收起、Chat 底部工具栏遮挡与命令菜单样式优化、Wiki 可见 Inbox、Wiki 支持新建 `.md` 文件 |
 | 2026-04-18 | 修复 Windows 安装版启动闪退：定位到 NSIS 安装产物缺失 `app/` 前端资源与可执行的 bundled backend launcher，导致已安装应用只弹出命令行窗口后立即退出；当前已把 `desktop:build` 改为显式生成 Tauri resource 清单，随包分发 `app/`、`backend-runtime/` 与 Windows sidecar `gogo-backend.exe`，并在启动时把 bundle 内后端 runtime 物化到 app data 后再启动，已在本机安装版验证可正常打开 `gogo-app` 主窗口 |
 | 2026-04-18 | 修复两条 Windows 打包态实机问题：1）Tauri 桌面版在 Windows 下启动 FastAPI 后端时不再继承控制台，而是隐藏子进程窗口并把日志落盘到 app data 下的 `logs/backend.log`；2）Pi 登录桥在调用 `cmd.exe` / `explorer` 前会清洗 `\\?\\` 与 `\\?\\UNC\\` 路径前缀，修复安装目录位于 `Program Files` 时无法打开 `pi` 终端的问题 |
 | 2026-04-18 | 扩展仓库 `.gitignore` 的 Windows / 本地环境忽略规则：补充 `.vs/`、`Thumbs.db`、`Desktop.ini`、`*.lnk`、`*.stackdump`、`pip-wheel-metadata/` 等本地噪音文件，降低 macOS / Windows 跨平台协作时的误提交风险 |
 | 2026-04-18 | 补充两条 Windows 实机问题记录：1）安装包启动应用时会额外弹出终端并持续显示 FastAPI 后端日志，和 macOS 当前体验不一致；2）配置 Pi 模型时终端报错 `'\\\\?\\D:\\Program Files\\gogo-app\\' CMD 不支持将 UNC 路径作为当前目录。无法打开 pi agent。`，需修复 Windows 下安装目录路径与 Pi 登录桥兼容性 |
 | 2026-04-18 | Windows 桌面构建链路推进：补齐 `src-tauri/icons/icon.ico`，确认本机已装好 Rust / WebView2 / VS 2019 Build Tools，`desktop:build` 已能产出 `desktop-runtime-staging/backend/gogo-backend.exe`；同时修复 `scripts/desktop-build.mjs` 在 Windows 上直接 `spawn` 本地 `tauri.cmd` 导致的 `spawn EINVAL`，并将 Windows 首发安装介质从 `msi` 调整为 `NSIS setup.exe`。随后通过预置 NSIS 依赖缓存解决下载超时，已在本机成功产出 `src-tauri/target/release/bundle/nsis/gogo-app_0.1.0_x64-setup.exe` |
-| 2026-04-23 | 将一组新的工作台交互改动加入任务列表：模式切换不自动弹出 Chat/Wiki、三类浮窗支持点外收起、Chat 底部工具栏遮挡与命令菜单样式优化、Wiki 可见 Inbox、Wiki 支持新建 `.md` 文件 |
 | 2026-04-16 | 完成一轮会话切换 / 启动恢复卡顿排查与性能优化：新增 `docs/session-performance-optimization-log.md`，并落地 app-turns 历史快路径、后台刷新 session detail、历史消息分批渲染 |
 | 2026-04-16 | 完成 Tauri 第一阶段迁移，并清理旧 Electron 文档与过期任务说明：新增 `src-tauri/`、Tauri 后端启动器、桌面 bridge 与目录选择能力；同步 README / TASKS / docs 索引 |
 | 2026-04-14 | 新增待排查问题：长回复可能被提前中断；`PiRpcClient.abort()` 与流式读取并发时出现 `read() called while another coroutine is already waiting for incoming data` |

@@ -156,13 +156,13 @@ def _match_score(query: str, page: dict[str, Any]) -> int:
         tokens.extend(fragment[index : index + 2] for index in range(len(fragment) - 1))
 
     haystack_title = page["title"].lower()
-    haystack_summary = page["summary"].lower()
-    content = page.get("content", "").lower()
+    filename = Path(str(page["path"])).name.lower()
+    filename_stem = Path(filename).stem
     score = 0
     for token in tokens:
         score += haystack_title.count(token) * 5
-        score += haystack_summary.count(token) * 3
-        score += content.count(token)
+        score += filename.count(token) * 4
+        score += filename_stem.count(token) * 4
     return score
 
 
