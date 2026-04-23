@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "clean": "node ./scripts/clean.mjs",
     "backend:dev": "node ./scripts/backend-dev.mjs",
     "desktop:dev": "tauri dev",
     "desktop:build": "node ./scripts/desktop-build.mjs"
