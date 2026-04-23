@@ -4,7 +4,7 @@
 > 项目级架构参考：[gogo-project-architecture.md](docs/gogo-project-architecture.md)  
 > 应用架构参考：[gogo-app-architecture.md](docs/gogo-app-architecture.md)
 
-**最后更新**: 2026-04-17
+**最后更新**: 2026-04-18
 
 ## 相关任务文档
 
@@ -342,6 +342,7 @@
   - [ ] macOS bundled `pi` 不可直接裸分发：需要作为 `gogo-app.app` 的内嵌运行时一起签名，并纳入整包 notarization 验收
   - [ ] 把当前启动前安装链路继续前移到真正的安装器/首次启动向导，做到 bundled `pi` 缺失时普通用户也无需等待应用启动后再补装
   - [x] 确保发布态应用能够正确定位 bundle 内的后端资源，并把默认 knowledge-base、session 与 Pi extension 等可写状态收口到 app data 目录
+    - [x] 修复 Windows NSIS 安装包启动只闪现命令行后立即退出的问题：根因是安装产物缺失 `app/` 前端资源与可执行的 bundled backend launcher；当前 `desktop:build` 会显式生成 Tauri bundle resource 清单，并在 Windows 下把 sidecar `gogo-backend.exe` 与 `backend-runtime/` 一起打包，应用启动时会先把 bundle 内的后端 runtime 物化到 app data 再拉起
   - [x] 收敛桌面资源 staging 目录：当前构建链与 `.gitignore` 已统一以 `src-tauri/desktop-runtime-staging/` 作为唯一有效资源输入，旧 `desktop-runtime/` 只保留为历史遗留目录
   - [ ] 明确并接入 Windows 代码签名
   - [ ] 明确并接入 macOS Developer ID 签名与 notarization
@@ -438,6 +439,7 @@
 
 | 日期 | 变更 |
 |------|------|
+| 2026-04-18 | 修复 Windows 安装版启动闪退：定位到 NSIS 安装产物缺失 `app/` 前端资源与可执行的 bundled backend launcher，导致已安装应用只弹出命令行窗口后立即退出；当前已把 `desktop:build` 改为显式生成 Tauri resource 清单，随包分发 `app/`、`backend-runtime/` 与 Windows sidecar `gogo-backend.exe`，并在启动时把 bundle 内后端 runtime 物化到 app data 后再启动，已在本机安装版验证可正常打开 `gogo-app` 主窗口 |
 | 2026-04-18 | 修复两条 Windows 打包态实机问题：1）Tauri 桌面版在 Windows 下启动 FastAPI 后端时不再继承控制台，而是隐藏子进程窗口并把日志落盘到 app data 下的 `logs/backend.log`；2）Pi 登录桥在调用 `cmd.exe` / `explorer` 前会清洗 `\\?\\` 与 `\\?\\UNC\\` 路径前缀，修复安装目录位于 `Program Files` 时无法打开 `pi` 终端的问题 |
 | 2026-04-18 | 扩展仓库 `.gitignore` 的 Windows / 本地环境忽略规则：补充 `.vs/`、`Thumbs.db`、`Desktop.ini`、`*.lnk`、`*.stackdump`、`pip-wheel-metadata/` 等本地噪音文件，降低 macOS / Windows 跨平台协作时的误提交风险 |
 | 2026-04-18 | 补充两条 Windows 实机问题记录：1）安装包启动应用时会额外弹出终端并持续显示 FastAPI 后端日志，和 macOS 当前体验不一致；2）配置 Pi 模型时终端报错 `'\\\\?\\D:\\Program Files\\gogo-app\\' CMD 不支持将 UNC 路径作为当前目录。无法打开 pi agent。`，需修复 Windows 下安装目录路径与 Pi 登录桥兼容性 |

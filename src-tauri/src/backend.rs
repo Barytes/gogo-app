@@ -140,7 +140,8 @@ pub fn launch_backend(
     let port = pick_available_port()?;
     let backend_url = format!("http://{BACKEND_HOST}:{port}");
     let bridge = start_desktop_bridge(&app_root, &app_state_dir)?;
-    let launchers = build_launchers(&app_root, port);
+    let bundled_backend_root = prepare_bundled_backend_runtime(&app_root, &app_state_dir)?;
+    let launchers = build_launchers(&app_root, bundled_backend_root.as_deref(), port);
     let mut last_error: Option<anyhow::Error> = None;
 
     for launcher in launchers {
@@ -188,10 +189,12 @@ fn pick_available_port() -> Result<u16> {
     Ok(port)
 }
 
-fn build_launchers(app_root: &Path, port: u16) -> Vec<Launcher> {
+fn build_launchers(app_root: &Path, bundled_backend_root: Option<&Path>, port: u16) -> Vec<Launcher> {
     let mut launchers = Vec::new();
 
-    let bundled_backend_unix = app_root.join("backend-runtime/gogo-backend");
+    let bundled_backend_base = bundled_backend_root.unwrap_or(app_root);
+
+    let bundled_backend_unix = bundled_backend_base.join("backend-runtime/gogo-backend");
     if bundled_backend_unix.exists() {
         launchers.push(Launcher {
             label: "bundled backend-runtime/gogo-backend".to_string(),
@@ -200,7 +203,7 @@ fn build_launchers(app_root: &Path, port: u16) -> Vec<Launcher> {
         });
     }
 
-    let bundled_backend_windows = app_root.join("backend-runtime/gogo-backend.exe");
+    let bundled_backend_windows = bundled_backend_base.join("backend-runtime/gogo-backend.exe");
     if bundled_backend_windows.exists() {
         launchers.push(Launcher {
             label: "bundled backend-runtime/gogo-backend.exe".to_string(),
@@ -252,6 +255,89 @@ fn build_launchers(app_root: &Path, port: u16) -> Vec<Launcher> {
     launchers.push(python_launcher("python", "python", port));
 
     launchers
+}
+
+fn prepare_bundled_backend_runtime(app_root: &Path, app_state_dir: &Path) -> Result<Option<PathBuf>> {
+    let bundled_dir = app_root.join("backend-runtime");
+    if !bundled_dir.exists() {
+        return Ok(None);
+    }
+
+    let bundled_unix = bundled_dir.join("gogo-backend");
+    if bundled_unix.exists() {
+        return Ok(None);
+    }
+
+    let bundled_windows = bundled_dir.join("gogo-backend.exe");
+    if bundled_windows.exists() {
+        return Ok(None);
+    }
+
+    let packaged_windows = bundled_dir.join("gogo-backend.bin");
+    let sidecar_windows = app_root.join("gogo-backend.exe");
+    if !packaged_windows.exists() && !sidecar_windows.exists() {
+        return Ok(None);
+    }
+
+    let managed_root = app_state_dir.join("bundled-resources");
+    let managed_backend_dir = managed_root.join("backend-runtime");
+    fs::create_dir_all(&managed_root).context("failed to create managed bundled resource root")?;
+    copy_directory_contents(&bundled_dir, &managed_backend_dir)?;
+
+    let managed_windows = managed_backend_dir.join("gogo-backend.exe");
+    if managed_windows.exists() {
+        let _ = fs::remove_file(&managed_windows);
+    }
+
+    if sidecar_windows.exists() {
+        fs::copy(&sidecar_windows, &managed_windows).with_context(|| {
+            format!(
+                "failed to copy bundled backend sidecar `{}` to `{}`",
+                sidecar_windows.display(),
+                managed_windows.display()
+            )
+        })?;
+    } else {
+        let managed_packaged = managed_backend_dir.join("gogo-backend.bin");
+        fs::rename(&managed_packaged, &managed_windows).with_context(|| {
+            format!(
+                "failed to restore packaged backend launcher `{}`",
+                managed_packaged.display()
+            )
+        })?;
+    }
+
+    Ok(Some(managed_root))
+}
+
+fn copy_directory_contents(source: &Path, destination: &Path) -> Result<()> {
+    fs::create_dir_all(destination)
+        .with_context(|| format!("failed to create directory `{}`", destination.display()))?;
+
+    for entry in
+        fs::read_dir(source).with_context(|| format!("failed to read `{}`", source.display()))?
+    {
+        let entry = entry.with_context(|| format!("failed to read entry in `{}`", source.display()))?;
+        let source_path = entry.path();
+        let destination_path = destination.join(entry.file_name());
+        let file_type = entry
+            .file_type()
+            .with_context(|| format!("failed to read file type for `{}`", source_path.display()))?;
+
+        if file_type.is_dir() {
+            copy_directory_contents(&source_path, &destination_path)?;
+        } else if file_type.is_file() {
+            fs::copy(&source_path, &destination_path).with_context(|| {
+                format!(
+                    "failed to copy `{}` to `{}`",
+                    source_path.display(),
+                    destination_path.display()
+                )
+            })?;
+        }
+    }
+
+    Ok(())
 }
 
 fn python_launcher(label: &str, program: &str, port: u16) -> Launcher {
