@@ -118,11 +118,24 @@ npm run desktop:build
 当前 `desktop:build` 已改为 **跨平台 Node 构建入口**，不再依赖 `sh`、`rm`、`mv`、`find` 这些 Unix shell 能力；默认会把桌面运行时收敛到 `src-tauri/desktop-runtime-staging/`，供 Tauri bundle 统一取用。  
 目前已经在 macOS 上重新验证通过；Windows 侧还需要实机或 CI runner 验收最终产物。
 
-如果已经拿到当前平台解压后的 `pi` 运行目录，可以把其中的 `pi` 可执行文件路径传给构建脚本：
+如果已经拿到当前平台解压后的 `pi` 运行目录，可以把其中的 `pi` 可执行文件路径传给构建脚本。`desktop:build` 现在会先读取 `gogo-app/.env`，所以也可以直接把这条配置写进 `.env`：
 
 ```bash
-GOGO_DESKTOP_PI_BINARY=../pi-runtime/macos-arm64/pi npm run desktop:build
+GOGO_DESKTOP_PI_BINARY=./pi-runtime/macos-arm64/pi npm run desktop:build
 ```
+
+也支持配置 runtime 根目录：
+
+```bash
+GOGO_DESKTOP_PI_RUNTIME_ROOT=./pi-runtime
+```
+
+默认搜索顺序现在是：
+
+- `GOGO_DESKTOP_PI_BINARY`
+- `GOGO_DESKTOP_PI_RUNTIME_ROOT`
+- `gogo-app/pi-runtime`
+- `../pi-runtime`
 
 当前 `desktop:build` 会先构建一个独立的桌面后端 runtime，再继续执行 Tauri bundle；在 macOS 上，非沙箱环境下已验证可产出 `.app/.dmg`。  
 当前桌面版已经把 bundled `pi` 接入了打包链：如果在构建时提供 `GOGO_DESKTOP_PI_BINARY`，`desktop:build` 会把该路径所在的上游 `pi` 运行目录整体打进安装包，并在运行时优先使用。  
