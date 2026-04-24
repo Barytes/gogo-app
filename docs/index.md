@@ -1,6 +1,6 @@
 # Docs Index
 
-**最后更新**: 2026-04-24
+**最后更新**: 2026-04-25
 
 > 说明：本索引仅覆盖 `docs/` 根目录文档，不包含 `docs/pi/`。
 
@@ -8,6 +8,8 @@
 
 - [release-target-and-boundaries.md](release-target-and-boundaries.md) - 当前对外发布目标、支持范围、外部依赖与开发态/正式分发边界
 - [product-definition-belief.md](product-definition-belief.md) - 产品目标与价值主张
+- [open-source-readiness-refactor-plan.md](open-source-readiness-refactor-plan.md) - 将当前仓库整理成适合公开展示和简历引用的最小作品型发布计划
+- [tolaria-documentation-lessons-for-gogo.md](tolaria-documentation-lessons-for-gogo.md) - 从 Tolaria 学习公开文档、设计原则和 AI-native 项目叙事的可迁移做法
 - [课题组公共知识库的联邦架构设计.md](课题组公共知识库的联邦架构设计.md) - 联邦架构全局设计（历史/全局视角）
 
 ## 架构（gogo 项目）
