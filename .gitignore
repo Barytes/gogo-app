@@ -31,6 +31,8 @@ htmlcov/
 
 # App runtime state
 .gogo/
+pi-runtime/
+.local/
 
 # Desktop build artifacts
 .cache/
