@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,6 +7,57 @@ import { fileURLToPath } from "node:url";
 const scriptDir = path.dirname(fileURLToPath(import.meta.url));
 const appRoot = path.resolve(scriptDir, "..");
 const tauriConfigPath = path.join(appRoot, "src-tauri", "tauri.conf.json");
+
+function loadEnvFile(filePath) {
+  if (!existsSync(filePath)) {
+    return;
+  }
+
+  const content = readFileSync(filePath, "utf8");
+  for (const rawLine of content.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (!line || line.startsWith("#")) {
+      continue;
+    }
+
+    const match = rawLine.match(/^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*)\s*$/);
+    if (!match) {
+      continue;
+    }
+
+    const [, key, rawValue] = match;
+    if (process.env[key] != null) {
+      continue;
+    }
+
+    let value = rawValue.trim();
+    if (
+      (value.startsWith('"') && value.endsWith('"')) ||
+      (value.startsWith("'") && value.endsWith("'"))
+    ) {
+      value = value.slice(1, -1);
+    } else {
+      value = value.replace(/\s+#.*$/, "").trim();
+    }
+
+    process.env[key] = value;
+  }
+}
+
+function resolveAppRelativePath(rawPath) {
+  const trimmed = String(rawPath || "").trim();
+  if (!trimmed) {
+    return "";
+  }
+  return path.isAbsolute(trimmed) ? trimmed : path.resolve(appRoot, trimmed);
+}
+
+function uniqueNonEmptyPaths(paths) {
+  return [...new Set(paths.filter(Boolean))];
+}
+
+loadEnvFile(path.join(appRoot, ".env"));
+
 const distRoot = path.resolve(
   process.env.GOGO_DESKTOP_DIST_ROOT || path.join(appRoot, "src-tauri", "desktop-runtime-staging"),
 );
@@ -22,7 +73,11 @@ const macosBundleDir = path.join(bundleRoot, "macos");
 const dmgBundleDir = path.join(bundleRoot, "dmg");
 const appSourceDir = path.join(appRoot, "app");
 const knowledgeBaseSourceDir = path.resolve(appRoot, "..", "knowledge-base");
-const bundledPiRuntimeRoot = path.resolve(appRoot, "..", "pi-runtime");
+const bundledPiRuntimeRoots = uniqueNonEmptyPaths([
+  resolveAppRelativePath(process.env.GOGO_DESKTOP_PI_RUNTIME_ROOT || ""),
+  path.join(appRoot, "pi-runtime"),
+  path.resolve(appRoot, "..", "pi-runtime"),
+]);
 const uvCacheDir = path.resolve(process.env.GOGO_DESKTOP_UV_CACHE_DIR || path.join(appRoot, ".cache", "uv"));
 const pyinstallerConfigDir = path.resolve(
   process.env.GOGO_DESKTOP_PYINSTALLER_CONFIG_DIR || path.join(appRoot, ".cache", "pyinstaller"),
@@ -47,34 +102,37 @@ function log(message) {
 }
 
 function defaultBundledPiSourceCandidates() {
+  const runtimeRoots = bundledPiRuntimeRoots;
   if (process.platform === "darwin") {
     const candidates = [];
-    if (process.arch === "arm64") {
+    runtimeRoots.forEach((runtimeRoot) => {
+      if (process.arch === "arm64") {
+        candidates.push(
+          path.join(runtimeRoot, "macos-arm64", "pi"),
+          path.join(runtimeRoot, "macos-arm64"),
+        );
+      }
+      if (process.arch === "x64") {
+        candidates.push(
+          path.join(runtimeRoot, "macos-x64", "pi"),
+          path.join(runtimeRoot, "macos-x64"),
+        );
+      }
       candidates.push(
-        path.join(bundledPiRuntimeRoot, "macos-arm64", "pi"),
-        path.join(bundledPiRuntimeRoot, "macos-arm64"),
+        path.join(runtimeRoot, "macos", "pi"),
+        path.join(runtimeRoot, "macos"),
       );
-    }
-    if (process.arch === "x64") {
-      candidates.push(
-        path.join(bundledPiRuntimeRoot, "macos-x64", "pi"),
-        path.join(bundledPiRuntimeRoot, "macos-x64"),
-      );
-    }
-    candidates.push(
-      path.join(bundledPiRuntimeRoot, "macos", "pi"),
-      path.join(bundledPiRuntimeRoot, "macos"),
-    );
+    });
     return candidates;
   }
 
   if (process.platform === "win32") {
-    return [
-      path.join(bundledPiRuntimeRoot, "windows-x64", "pi.exe"),
-      path.join(bundledPiRuntimeRoot, "windows-x64"),
-      path.join(bundledPiRuntimeRoot, "windows", "pi.exe"),
-      path.join(bundledPiRuntimeRoot, "windows"),
-    ];
+    return runtimeRoots.flatMap((runtimeRoot) => [
+      path.join(runtimeRoot, "windows-x64", "pi.exe"),
+      path.join(runtimeRoot, "windows-x64"),
+      path.join(runtimeRoot, "windows", "pi.exe"),
+      path.join(runtimeRoot, "windows"),
+    ]);
   }
 
   return [];
@@ -239,7 +297,7 @@ function spawnChecked(command, args, options = {}) {
 async function resolveBundledPiSourcePath() {
   const configuredPath = String(process.env.GOGO_DESKTOP_PI_BINARY || "").trim();
   if (configuredPath) {
-    return path.resolve(configuredPath);
+    return resolveAppRelativePath(configuredPath);
   }
 
   const defaultCandidate = await firstExisting(defaultBundledPiSourceCandidates());

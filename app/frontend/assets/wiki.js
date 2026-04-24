@@ -249,16 +249,80 @@ async function openCreateMarkdownFlow() {
 }
 
 function escapeHtml(value) {
-  return value
+  return String(value || "")
     .replaceAll("&", "&amp;")
     .replaceAll("<", "&lt;")
     .replaceAll(">", "&gt;");
 }
 
+function escapeHtmlAttribute(value) {
+  return String(value || "")
+    .replaceAll("&", "&amp;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;");
+}
+
+function sanitizeMarkdownHref(value) {
+  const href = String(value || "")
+    .trim()
+    .replaceAll("&amp;", "&")
+    .replaceAll("&lt;", "<")
+    .replaceAll("&gt;", ">");
+  if (!href) {
+    return "";
+  }
+
+  const normalized = href.replace(/[\u0000-\u001f\u007f\s]+/g, "").toLowerCase();
+  if (
+    normalized.startsWith("javascript:") ||
+    normalized.startsWith("data:") ||
+    normalized.startsWith("vbscript:")
+  ) {
+    return "";
+  }
+
+  return href;
+}
+
+function isExternalWebHref(value) {
+  return /^https?:\/\//i.test(String(value || "").trim());
+}
+
+async function openExternalMarkdownLink(href) {
+  const safeHref = sanitizeMarkdownHref(href);
+  if (!safeHref) {
+    return;
+  }
+
+  if (window.GogoDesktop?.isDesktopRuntime?.() && typeof window.GogoDesktop.openPath === "function") {
+    await window.GogoDesktop.openPath(safeHref);
+    return;
+  }
+
+  window.open(safeHref, "_blank", "noopener,noreferrer");
+}
+
+function buildMarkdownLink(label, href) {
+  const safeHref = sanitizeMarkdownHref(href);
+  if (!safeHref) {
+    return label;
+  }
+
+  const attributes = [`href="${escapeHtmlAttribute(safeHref)}"`];
+  if (isExternalWebHref(safeHref)) {
+    attributes.push('target="_blank"', 'rel="noreferrer noopener"', 'data-external-link="true"');
+  }
+
+  return `<a ${attributes.join(" ")}>${label}</a>`;
+}
+
 function renderInline(text) {
   let rendered = escapeHtml(text);
   rendered = rendered.replace(/`([^`]+)`/g, "<code>$1</code>");
-  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2">$1</a>');
+  rendered = rendered.replace(/\[([^\]]+)\]\(([^)]+)\)/g, (_match, label, href) =>
+    buildMarkdownLink(label, href)
+  );
   return rendered;
 }
 
@@ -818,6 +882,19 @@ function renderPageData(data) {
     window.GogoMath?.renderElement?.(contentEl);
     contentEl.querySelectorAll("a").forEach((a) => {
       const href = a.getAttribute("href") || "";
+      if (a.dataset.externalLink === "true" || isExternalWebHref(href)) {
+        a.addEventListener("click", async (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          try {
+            await openExternalMarkdownLink(href);
+          } catch (error) {
+            const message = String(error?.message || error || "打开链接失败。");
+            window.WorkbenchUI?.showToast?.(message);
+          }
+        });
+        return;
+      }
       const destination = resolveWorkbenchTarget(href, data.path, activeMode);
       if (!destination) {
         return;
