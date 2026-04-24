@@ -43,6 +43,7 @@ pip-wheel-metadata/
 
 # App runtime state
 .gogo/
+pi-runtime/
 
 # Desktop build artifacts
 .cache/
