@@ -361,6 +361,8 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 | `PI_WORKDIR` | 未显式设置时，默认跟随当前知识库目录 |
 | `PI_RPC_SESSION_DIR` | Session 根目录；实际运行时还会再拼接知识库 namespace |
 
+桌面开发态下，`POST /api/settings/pi-login` 若无法连接 Tauri 桥，会由 Python 后端直接打开 macOS Terminal 或 Windows 终端作为 Pi `/login` 兜底入口；Windows 下优先直接启动 PowerShell，这不改变 session RPC 的持久化目录语义。
+
 ---
 
 ## 11. 当前边界

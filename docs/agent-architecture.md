@@ -250,6 +250,7 @@ workbench.js / chat.js
 - 通过 `POST /api/settings/pi-login`
 - 接到桌面壳桥接层
 - 拉起交互式 Pi CLI，并触发原生 `/login`
+- 若开发态桌面桥不可用，Python 后端会在 macOS / Windows 上直接打开本机终端作为兜底登录入口；Windows 下优先直接启动 PowerShell，避免 Windows Terminal 二次解析命令行
 
 ---
 
@@ -301,10 +302,10 @@ workbench.js / chat.js
 - 按知识库隔离的 session 目录
 - Model Provider profile + 托管 extension
 - settings / diagnostics / inbox / runtime options API
+- 桌面版 Pi CLI 登录桥与 macOS / Windows 开发态直连兜底
 
 未实现：
 
-- 真正的桌面版 Pi CLI 登录桥
 - 桌面版 Wiki Markdown 编辑
 - 桌面版 slash 命令桥接
 

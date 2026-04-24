@@ -10,7 +10,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 use anyhow::{anyhow, Context, Result};
 use serde::Serialize;
@@ -23,6 +23,7 @@ const HEALTH_TIMEOUT: Duration = Duration::from_secs(30);
 const HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(100);
 const BRIDGE_POLL_INTERVAL: Duration = Duration::from_millis(150);
 const PI_PACKAGE_NAME: &str = "@mariozechner/pi-coding-agent";
+const MANAGED_BACKEND_FINGERPRINT_FILE: &str = ".gogo-backend-runtime-fingerprint";
 #[cfg(target_os = "windows")]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
@@ -189,7 +190,11 @@ fn pick_available_port() -> Result<u16> {
     Ok(port)
 }
 
-fn build_launchers(app_root: &Path, bundled_backend_root: Option<&Path>, port: u16) -> Vec<Launcher> {
+fn build_launchers(
+    app_root: &Path,
+    bundled_backend_root: Option<&Path>,
+    port: u16,
+) -> Vec<Launcher> {
     let mut launchers = Vec::new();
 
     let bundled_backend_base = bundled_backend_root.unwrap_or(app_root);
@@ -257,7 +262,10 @@ fn build_launchers(app_root: &Path, bundled_backend_root: Option<&Path>, port: u
     launchers
 }
 
-fn prepare_bundled_backend_runtime(app_root: &Path, app_state_dir: &Path) -> Result<Option<PathBuf>> {
+fn prepare_bundled_backend_runtime(
+    app_root: &Path,
+    app_state_dir: &Path,
+) -> Result<Option<PathBuf>> {
     let bundled_dir = app_root.join("backend-runtime");
     if !bundled_dir.exists() {
         return Ok(None);
@@ -282,6 +290,34 @@ fn prepare_bundled_backend_runtime(app_root: &Path, app_state_dir: &Path) -> Res
     let managed_root = app_state_dir.join("bundled-resources");
     let managed_backend_dir = managed_root.join("backend-runtime");
     fs::create_dir_all(&managed_root).context("failed to create managed bundled resource root")?;
+    let expected_fingerprint =
+        backend_runtime_fingerprint(&packaged_windows, &sidecar_windows)?;
+
+    if managed_backend_runtime_ready(&managed_backend_dir, &expected_fingerprint) {
+        return Ok(Some(managed_root));
+    }
+
+    if managed_backend_dir.exists() {
+        match fs::remove_dir_all(&managed_backend_dir) {
+            Ok(()) => {}
+            Err(error) if managed_backend_runtime_layout_ready(&managed_backend_dir) => {
+                eprintln!(
+                    "failed to replace managed backend runtime `{}`; reusing existing runtime: {error}",
+                    managed_backend_dir.display()
+                );
+                return Ok(Some(managed_root));
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!(
+                        "failed to remove incomplete managed backend runtime `{}`",
+                        managed_backend_dir.display()
+                    )
+                });
+            }
+        }
+    }
+
     copy_directory_contents(&bundled_dir, &managed_backend_dir)?;
 
     let managed_windows = managed_backend_dir.join("gogo-backend.exe");
@@ -307,7 +343,55 @@ fn prepare_bundled_backend_runtime(app_root: &Path, app_state_dir: &Path) -> Res
         })?;
     }
 
+    fs::write(
+        managed_backend_dir.join(MANAGED_BACKEND_FINGERPRINT_FILE),
+        expected_fingerprint,
+    )
+    .with_context(|| {
+        format!(
+            "failed to write managed backend runtime fingerprint in `{}`",
+            managed_backend_dir.display()
+        )
+    })?;
+
     Ok(Some(managed_root))
+}
+
+fn managed_backend_runtime_ready(managed_backend_dir: &Path, expected_fingerprint: &str) -> bool {
+    if !managed_backend_runtime_layout_ready(managed_backend_dir) {
+        return false;
+    }
+
+    let marker = managed_backend_dir.join(MANAGED_BACKEND_FINGERPRINT_FILE);
+    fs::read_to_string(marker)
+        .map(|value| value == expected_fingerprint)
+        .unwrap_or(false)
+}
+
+fn managed_backend_runtime_layout_ready(managed_backend_dir: &Path) -> bool {
+    managed_backend_dir.join("gogo-backend.exe").is_file()
+        && managed_backend_dir.join("_internal").is_dir()
+}
+
+fn backend_runtime_fingerprint(packaged_windows: &Path, sidecar_windows: &Path) -> Result<String> {
+    let launcher = if sidecar_windows.exists() {
+        sidecar_windows
+    } else {
+        packaged_windows
+    };
+    let metadata = fs::metadata(launcher).with_context(|| {
+        format!(
+            "failed to read bundled backend launcher metadata `{}`",
+            launcher.display()
+        )
+    })?;
+    let modified = metadata
+        .modified()
+        .ok()
+        .and_then(|value| value.duration_since(UNIX_EPOCH).ok())
+        .map(|value| value.as_secs())
+        .unwrap_or(0);
+    Ok(format!("{}:{}:{}", launcher.display(), metadata.len(), modified))
 }
 
 fn copy_directory_contents(source: &Path, destination: &Path) -> Result<()> {
@@ -317,7 +401,8 @@ fn copy_directory_contents(source: &Path, destination: &Path) -> Result<()> {
     for entry in
         fs::read_dir(source).with_context(|| format!("failed to read `{}`", source.display()))?
     {
-        let entry = entry.with_context(|| format!("failed to read entry in `{}`", source.display()))?;
+        let entry =
+            entry.with_context(|| format!("failed to read entry in `{}`", source.display()))?;
         let source_path = entry.path();
         let destination_path = destination.join(entry.file_name());
         let file_type = entry
@@ -400,21 +485,25 @@ fn configure_backend_command_stdio(command: &mut Command, app_state_dir: &Path) 
     #[cfg(target_os = "windows")]
     {
         let log_path = backend_log_path(app_state_dir);
-        if let Some(parent) = log_path.parent() {
-            fs::create_dir_all(parent).context("failed to create backend log directory")?;
+        let backend_log = log_path
+            .parent()
+            .and_then(|parent| fs::create_dir_all(parent).ok().map(|_| ()))
+            .and_then(|_| {
+                OpenOptions::new()
+                    .create(true)
+                    .append(true)
+                    .open(&log_path)
+                    .ok()
+            })
+            .and_then(|stdout| stdout.try_clone().ok().map(|stderr| (stdout, stderr)));
+
+        if let Some((stdout, stderr)) = backend_log {
+            command.stdout(Stdio::from(stdout)).stderr(Stdio::from(stderr));
+        } else {
+            command.stdout(Stdio::null()).stderr(Stdio::null());
         }
-        let stdout = OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&log_path)
-            .with_context(|| format!("failed to open backend log file `{}`", log_path.display()))?;
-        let stderr = stdout
-            .try_clone()
-            .context("failed to clone backend log handle")?;
-        command
-            .stdout(Stdio::from(stdout))
-            .stderr(Stdio::from(stderr))
-            .creation_flags(CREATE_NO_WINDOW);
+
+        command.creation_flags(CREATE_NO_WINDOW);
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -717,7 +806,8 @@ fn start_pi_install(
             match result {
                 Ok(exit_code) => {
                     state.last_exit_code = Some(exit_code);
-                    if preferred_pi_command_path(&thread_app_root, &thread_app_state_dir).is_some() {
+                    if preferred_pi_command_path(&thread_app_root, &thread_app_state_dir).is_some()
+                    {
                         state.last_detail =
                             "Pi 已安装到 gogo-app 的托管目录，可以直接继续登录。".to_string();
                     } else {
@@ -765,7 +855,9 @@ fn run_pi_install(app_state_dir: &Path, npm_command_path: &Path) -> Result<i32> 
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
-    let output = command.output().context("failed to launch npm install for Pi")?;
+    let output = command
+        .output()
+        .context("failed to launch npm install for Pi")?;
     let mut log_lines = vec![format!("$ {install_command}"), String::new()];
     let stdout = String::from_utf8_lossy(&output.stdout).trim().to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
@@ -805,10 +897,10 @@ fn build_pi_install_status(
         .map(|path| path.to_string_lossy().into_owned());
     let bundled_command_path =
         bundled_pi_command_path(app_root).map(|path| path.to_string_lossy().into_owned());
-    let managed_command_path = managed_pi_command_path(app_state_dir)
-        .map(|path| path.to_string_lossy().into_owned());
-    let npm_command_path = resolve_npm_command_path()
-        .map(|path| path.to_string_lossy().into_owned());
+    let managed_command_path =
+        managed_pi_command_path(app_state_dir).map(|path| path.to_string_lossy().into_owned());
+    let npm_command_path =
+        resolve_npm_command_path().map(|path| path.to_string_lossy().into_owned());
     let install_supported = npm_command_path.is_some();
     let runtime_dir = managed_pi_runtime_dir(app_state_dir);
     let install_log_path = managed_pi_install_log_path(app_state_dir);
@@ -857,7 +949,9 @@ fn build_pi_install_status(
         bundled_command_path,
         managed_command_path,
         command_source,
-        bundled_runtime_dir: bundled_pi_runtime_dir(app_root).to_string_lossy().into_owned(),
+        bundled_runtime_dir: bundled_pi_runtime_dir(app_root)
+            .to_string_lossy()
+            .into_owned(),
         runtime_dir: runtime_dir.to_string_lossy().into_owned(),
         install_log_path: install_log_path.to_string_lossy().into_owned(),
         npm_command_path,
@@ -1049,8 +1143,9 @@ fn launch_desktop_pi_login(app_root: &Path, app_state_dir: &Path) -> Result<Desk
 
     #[cfg(target_os = "windows")]
     {
-        let shell_command = build_pi_terminal_cmd_command(app_root, app_state_dir);
-        launch_windows_terminal(app_root, shell_command)?;
+        let shell_command = build_pi_terminal_powershell_command(app_root, app_state_dir);
+        let cmd_fallback = build_pi_terminal_cmd_command(app_root, app_state_dir);
+        launch_windows_login_shell(app_root, shell_command, cmd_fallback)?;
         return Ok(DesktopLoginResponse {
             success: true,
             detail:
@@ -1070,6 +1165,7 @@ fn launch_desktop_pi_login(app_root: &Path, app_state_dir: &Path) -> Result<Desk
     }
 }
 
+#[cfg(target_os = "macos")]
 fn build_pi_terminal_shell_command(app_root: &Path, app_state_dir: &Path) -> String {
     let spec = build_pi_command_spec(app_root, app_state_dir);
     let mut parts = vec![
@@ -1097,9 +1193,30 @@ fn build_pi_terminal_cmd_command(app_root: &Path, app_state_dir: &Path) -> Strin
     parts.join(" && ")
 }
 
+#[cfg(target_os = "windows")]
+fn build_pi_terminal_powershell_command(app_root: &Path, app_state_dir: &Path) -> String {
+    let spec = build_pi_command_spec(app_root, app_state_dir);
+    let app_root = normalize_windows_shell_path(app_root);
+    let parts = vec![
+        format!(
+            "Set-Location -LiteralPath {}",
+            windows_powershell_quote(app_root.to_string_lossy().as_ref())
+        ),
+        "Write-Host ''".to_string(),
+        "Write-Host 'Pi started. If the login menu is not visible, type /login and press Enter.'"
+            .to_string(),
+        build_pi_powershell_command(&spec),
+    ];
+    parts.join("; ")
+}
+
 fn build_pi_command_spec(app_root: &Path, app_state_dir: &Path) -> PiCommandSpec {
     let pi_program = preferred_pi_command_path(app_root, app_state_dir)
-        .map(|path| normalize_windows_shell_path(&path).to_string_lossy().into_owned())
+        .map(|path| {
+            normalize_windows_shell_path(&path)
+                .to_string_lossy()
+                .into_owned()
+        })
         .or_else(|| {
             env::var("PI_COMMAND")
                 .ok()
@@ -1125,6 +1242,7 @@ fn build_pi_command_spec(app_root: &Path, app_state_dir: &Path) -> PiCommandSpec
     }
 }
 
+#[cfg(target_os = "macos")]
 fn build_pi_shell_command(spec: &PiCommandSpec) -> String {
     let mut args = vec![shell_quote(&spec.program)];
     for item in &spec.args {
@@ -1144,6 +1262,15 @@ fn build_pi_cmd_command(spec: &PiCommandSpec) -> String {
     args.push(program);
     for item in &spec.args {
         args.push(windows_cmd_quote(item));
+    }
+    args.join(" ")
+}
+
+#[cfg(target_os = "windows")]
+fn build_pi_powershell_command(spec: &PiCommandSpec) -> String {
+    let mut args = vec!["&".to_string(), windows_powershell_quote(&spec.program)];
+    for item in &spec.args {
+        args.push(windows_powershell_quote(item));
     }
     args.join(" ")
 }
@@ -1176,11 +1303,33 @@ fn run_osascript(lines: &[String]) -> Result<()> {
 }
 
 #[cfg(target_os = "windows")]
-fn launch_windows_terminal(app_root: &Path, shell_command: String) -> Result<()> {
+fn launch_windows_login_shell(
+    app_root: &Path,
+    shell_command: String,
+    cmd_fallback: String,
+) -> Result<()> {
+    let app_root = normalize_windows_shell_path(app_root);
+    let powershell =
+        resolve_command_path(&["powershell.exe".to_string(), "powershell".to_string()]);
+
+    if let Some(powershell) = powershell {
+        Command::new(powershell)
+            .arg("-NoExit")
+            .arg("-NoProfile")
+            .arg("-ExecutionPolicy")
+            .arg("Bypass")
+            .arg("-Command")
+            .arg(&shell_command)
+            .current_dir(&app_root)
+            .spawn()
+            .context("failed to launch PowerShell for Pi login")?;
+        return Ok(());
+    }
+
     Command::new("cmd.exe")
         .arg("/K")
-        .arg(shell_command)
-        .current_dir(normalize_windows_shell_path(app_root))
+        .arg(cmd_fallback)
+        .current_dir(&app_root)
         .spawn()
         .context("failed to launch cmd.exe for Pi login")?;
     Ok(())
@@ -1198,6 +1347,12 @@ fn windows_cmd_quote(value: &str) -> String {
 }
 
 #[cfg(target_os = "windows")]
+fn windows_powershell_quote(value: &str) -> String {
+    let escaped = normalize_windows_shell_value(value).replace('\'', "''");
+    format!("'{escaped}'")
+}
+
+#[cfg(target_os = "windows")]
 fn is_windows_batch_script(value: &str) -> bool {
     value
         .rsplit_once('.')
@@ -1207,7 +1362,9 @@ fn is_windows_batch_script(value: &str) -> bool {
 
 #[cfg(target_os = "windows")]
 fn normalize_windows_shell_path(path: &Path) -> PathBuf {
-    PathBuf::from(normalize_windows_shell_value(path.to_string_lossy().as_ref()))
+    PathBuf::from(normalize_windows_shell_value(
+        path.to_string_lossy().as_ref(),
+    ))
 }
 
 #[cfg(target_os = "windows")]
@@ -1231,6 +1388,7 @@ fn normalize_windows_shell_value(value: &str) -> String {
     value.to_string()
 }
 
+#[cfg(target_os = "macos")]
 fn shell_quote(value: &str) -> String {
     let escaped = value.replace('\'', r#"'\''"#);
     format!("'{escaped}'")

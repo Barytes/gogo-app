@@ -22,17 +22,10 @@
       "icons/icon.ico",
       "icons/icon.icns"
     ],
-    "resources": {
-      "../app/": "app",
-      "./desktop-runtime-staging/backend/": "backend-runtime",
-      "./desktop-runtime-staging/pi/": "pi-runtime",
-      "../../knowledge-base/AGENTS.md": "knowledge-base/AGENTS.md",
-      "../../knowledge-base/README.md": "knowledge-base/README.md",
-      "../../knowledge-base/inbox/": "knowledge-base/inbox",
-      "../../knowledge-base/raw/": "knowledge-base/raw",
-      "../../knowledge-base/wiki/": "knowledge-base/wiki",
-      "../../knowledge-base/schemas/": "knowledge-base/schemas",
-      "../../knowledge-base/skills/": "knowledge-base/skills"
+    "windows": {
+      "nsis": {
+        "installMode": "both"
+      }
     }
   }
 }

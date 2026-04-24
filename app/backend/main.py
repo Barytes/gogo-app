@@ -9,6 +9,7 @@ from pathlib import Path
 import json
 import platform
 import shlex
+import shutil
 import subprocess
 from urllib import error as urllib_error
 from urllib import request as urllib_request
@@ -175,6 +176,93 @@ def _build_direct_pi_shell_command() -> str:
     )
 
 
+def _normalize_windows_shell_value(value: str) -> str:
+    raw = str(value or "")
+    if raw.startswith("\\\\?\\UNC\\"):
+        return "\\\\" + raw[len("\\\\?\\UNC\\") :]
+    if raw.startswith("\\\\?\\"):
+        return raw[len("\\\\?\\") :]
+    return raw
+
+
+def _windows_cmd_quote(value: str) -> str:
+    escaped = _normalize_windows_shell_value(value).replace('"', '""')
+    return f'"{escaped}"'
+
+
+def _is_windows_batch_script(value: str) -> bool:
+    return Path(value).suffix.lower() in {".cmd", ".bat"}
+
+
+def _build_direct_pi_cmd_command() -> str:
+    pi_program = _normalize_windows_shell_value(get_pi_command_path() or get_pi_command())
+    pi_parts = [
+        f"call {_windows_cmd_quote(pi_program)}"
+        if _is_windows_batch_script(pi_program)
+        else _windows_cmd_quote(pi_program)
+    ]
+    for path in get_pi_extension_paths():
+        pi_parts.append("--extension")
+        pi_parts.append(_windows_cmd_quote(str(path)))
+
+    return " && ".join(
+        [
+            f"cd /d {_windows_cmd_quote(str(ROOT_DIR))}",
+            "echo.",
+            "echo Pi 已启动。若未自动触发登录，请输入 /login 命令。",
+            " ".join(pi_parts),
+        ]
+    )
+
+
+def _windows_powershell_quote(value: str) -> str:
+    escaped = _normalize_windows_shell_value(value).replace("'", "''")
+    return f"'{escaped}'"
+
+
+def _build_direct_pi_powershell_command() -> str:
+    pi_program = _normalize_windows_shell_value(get_pi_command_path() or get_pi_command())
+    pi_parts = ["&", _windows_powershell_quote(pi_program)]
+    for path in get_pi_extension_paths():
+        pi_parts.append("--extension")
+        pi_parts.append(_windows_powershell_quote(str(path)))
+
+    return "; ".join(
+        [
+            f"Set-Location -LiteralPath {_windows_powershell_quote(str(ROOT_DIR))}",
+            "Write-Host ''",
+            "Write-Host 'Pi started. If the login menu is not visible, type /login and press Enter.'",
+            " ".join(pi_parts),
+        ]
+    )
+
+
+def _run_windows_login_shell_keep_open(shell_command: str, cmd_fallback: str) -> None:
+    creationflags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if powershell:
+        subprocess.Popen(
+            [
+                powershell,
+                "-NoExit",
+                "-NoProfile",
+                "-ExecutionPolicy",
+                "Bypass",
+                "-Command",
+                shell_command,
+            ],
+            cwd=_normalize_windows_shell_value(str(ROOT_DIR)),
+            creationflags=creationflags,
+        )
+        return
+
+    subprocess.Popen(
+        f"cmd.exe /K {cmd_fallback}",
+        cwd=_normalize_windows_shell_value(str(ROOT_DIR)),
+        creationflags=creationflags,
+    )
+
+
 def _run_osascript_lines(lines: list[str]) -> None:
     command = ["osascript"]
     for line in lines:
@@ -191,16 +279,21 @@ def _applescript_escape(value: str) -> str:
 
 
 def _start_desktop_pi_login_direct() -> dict[str, object]:
-    if platform.system().lower() != "darwin":
-        raise RuntimeError("当前开发态兜底登录只实现了 macOS。")
+    system = platform.system().lower()
+    if system == "windows":
+        shell_command = _build_direct_pi_powershell_command()
+        _run_windows_login_shell_keep_open(shell_command, _build_direct_pi_cmd_command())
+    elif system == "darwin":
+        shell_command = _build_direct_pi_shell_command()
+        _run_osascript_lines(
+            [
+                'tell application "Terminal" to activate',
+                f'tell application "Terminal" to do script "{_applescript_escape(shell_command)}"',
+            ]
+        )
+    else:
+        raise RuntimeError("当前开发态兜底登录只实现了 macOS / Windows 终端拉起流程。")
 
-    shell_command = _build_direct_pi_shell_command()
-    _run_osascript_lines(
-        [
-            'tell application "Terminal" to activate',
-            f'tell application "Terminal" to do script "{_applescript_escape(shell_command)}"',
-        ]
-    )
     detail = "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo-app 会自动刷新 Provider 状态。"
 
     return {

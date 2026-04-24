@@ -176,6 +176,8 @@
 - `DELETE /api/settings/model-providers/{provider_key}`
 - `POST /api/settings/pi-login`
 
+`POST /api/settings/pi-login` 在桌面开发态也可通过后端直连兜底打开 macOS Terminal 或 Windows 终端；Windows 下优先直接启动 PowerShell，前端不需要区分 Tauri 桥与兜底路径。
+
 ### 4.5 Diagnostics 区
 
 主要元素：

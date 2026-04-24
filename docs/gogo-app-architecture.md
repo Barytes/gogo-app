@@ -175,6 +175,8 @@ Browser
 
 当前在 Web 运行时，这个接口只返回“桌面版尚未接入”的提示；桌面壳接入后，这个接口会统一打开交互式 Pi CLI，并触发原生 `/login`，而不是继续承担 provider-specific 登录语义。
 
+Windows / macOS 的 `desktop:dev` 还保留 Python 后端直连兜底：当 Tauri 桥地址缺失或不可连接时，`POST /api/settings/pi-login` 会直接拉起本机终端运行当前检测到的 `pi`，避免开发态登录入口依赖发布态桥接链路。Windows 下优先直接启动系统 PowerShell，最后才退回 `cmd.exe`。
+
 ## 5.2 设置、Inbox 与 diagnostics
 
 当前 `gogo-app` 的设置面板已经收敛成 3 个分组：

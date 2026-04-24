@@ -1,3 +1,8 @@
+#![cfg_attr(
+    all(not(debug_assertions), target_os = "windows"),
+    windows_subsystem = "windows"
+)]
+
 mod backend;
 mod commands;
 
@@ -14,14 +19,18 @@ use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
 
 const COMPANION_KNOWLEDGE_BASE_DIRNAME: &str = "gogo-knowledge-base";
 const STARTUP_ONBOARDING_PENDING_KEY: &str = "startup_onboarding_pending";
-const STARTUP_LOG_PATH: &str = "/tmp/gogo-app-desktop-startup.log";
+
+fn startup_log_path() -> PathBuf {
+    env::temp_dir().join("gogo-app-desktop-startup.log")
+}
 
 fn append_startup_log(message: impl AsRef<str>) {
     let line = format!("{}\n", message.as_ref());
+    let path = startup_log_path();
     if let Ok(mut file) = fs::OpenOptions::new()
         .create(true)
         .append(true)
-        .open(STARTUP_LOG_PATH)
+        .open(path)
     {
         let _ = file.write_all(line.as_bytes());
     }
@@ -147,7 +156,7 @@ fn resolve_initial_knowledge_base_dir(
 }
 
 fn main() {
-    let _ = fs::write(STARTUP_LOG_PATH, "");
+    let _ = fs::write(startup_log_path(), "");
     append_startup_log("main: entered");
     panic::set_hook(Box::new(|panic_info| {
         append_startup_log(format!("panic: {panic_info}"));
