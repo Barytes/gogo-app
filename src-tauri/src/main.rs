@@ -21,7 +21,7 @@ const COMPANION_KNOWLEDGE_BASE_DIRNAME: &str = "gogo-knowledge-base";
 const STARTUP_ONBOARDING_PENDING_KEY: &str = "startup_onboarding_pending";
 
 fn startup_log_path() -> PathBuf {
-    env::temp_dir().join("gogo-app-desktop-startup.log")
+    env::temp_dir().join("gogo-desktop-startup.log")
 }
 
 fn append_startup_log(message: impl AsRef<str>) {
@@ -240,7 +240,7 @@ fn main() {
             append_startup_log("setup: webview url parsed");
 
             WebviewWindowBuilder::new(app, "main", url)
-                .title("gogo-app")
+                .title("gogo")
                 .inner_size(1480.0, 980.0)
                 .min_inner_size(1120.0, 760.0)
                 .build()
@@ -253,6 +253,6 @@ fn main() {
         .run(tauri::generate_context!())
         .unwrap_or_else(|error| {
             append_startup_log(format!("run: error={error}"));
-            panic!("failed to run gogo-app tauri shell: {error}");
+            panic!("failed to run gogo tauri shell: {error}");
         });
 }

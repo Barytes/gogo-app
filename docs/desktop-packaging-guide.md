@@ -9,8 +9,8 @@
 
 截至 **2026-04-18**：
 
-- `gogo-app` 已经可以在 **macOS** 上从当前仓库稳定构建出 `.app + .dmg`
-- `gogo-app` 的构建入口已经重构为**跨平台 Node 脚本**
+- `gogo` 已经可以在 **macOS** 上从当前仓库稳定构建出 `.app + .dmg`
+- `gogo` 的构建入口已经重构为**跨平台 Node 脚本**
 - 代码层已经补齐了 **Windows** 所需的构建主链与 `pi` 登录桥基础骨架
 - 但 **Windows 侧仍未在实机或 CI runner 上完成最终验收**
 
@@ -57,8 +57,8 @@ Windows 下登录桥会直接启动系统 PowerShell 并运行当前检测到的
 
 Windows NSIS 安装模式为 `both`：安装器会明确让用户选择“仅当前用户”或
 “所有用户”。如果安装到 `Program Files` 这类需要管理员权限的位置，应选择
-“所有用户”；仅当前用户安装应使用默认的 `%LOCALAPPDATA%\gogo-app`。
-启动期日志会写入 `%TEMP%\gogo-app-desktop-startup.log`，用于排查安装版
+“所有用户”；仅当前用户安装应使用默认的 `%LOCALAPPDATA%\gogo`。
+启动期日志会写入 `%TEMP%\gogo-desktop-startup.log`，用于排查安装版
 只闪一下或主窗口未创建的问题。
 Windows 发布态会把 bundle 内的 PyInstaller 后端 runtime 物化到
 `%APPDATA%\space.aibuilders.gogoapp\bundled-resources\backend-runtime`；
@@ -155,14 +155,14 @@ GOGO_DESKTOP_PI_BINARY=../pi-runtime/macos-arm64/pi npm run desktop:build -- --d
 ### 4.3 产物位置
 
 - `.app`:
-  - `src-tauri/target/<profile>/bundle/macos/gogo-app.app`
+  - `src-tauri/target/<profile>/bundle/macos/gogo.app`
 - `.dmg`:
-  - `src-tauri/target/<profile>/bundle/dmg/gogo-app_<version>_aarch64.dmg`
+  - `src-tauri/target/<profile>/bundle/dmg/gogo_<version>_aarch64.dmg`
 
 ### 4.4 当前已知边界
 
 - macOS 上 bundled `pi` 不能裸分发上游 runtime 目录
-- 最终对外发布前，需要随 `gogo-app.app` 一起签名并纳入 notarization
+- 最终对外发布前，需要随 `gogo.app` 一起签名并纳入 notarization
 - 当前 companion knowledge-base 的模板 provision 已修复：若用户选定目录不完整，会自动补齐模板
 - 若 bundle 内缺少 `app/`、`backend-runtime/` 或 `pi-runtime/`，应用可能表现为启动即崩、RPC 找不到 `pi`、模型/思考水平设置失败；这些都必须在发包前按专项回归清单显式验证
 - 当前打包脚本已改为 fail-fast：若默认路径和 `GOGO_DESKTOP_PI_BINARY` 都无法提供可用的 Pi runtime，则构建会直接失败
@@ -227,8 +227,8 @@ npm run desktop:build -- --debug
 
 - `backend-runtime/gogo-backend.exe`
 - 最终安装介质 `NSIS setup.exe`
-- `%TEMP%\gogo-app-desktop-startup.log` 中应出现 `setup: main window built`
-- 双击安装版只出现 `gogo-app` 桌面端窗口，不出现额外终端窗口
+- `%TEMP%\gogo-desktop-startup.log` 中应出现 `setup: main window built`
+- 双击安装版只出现 `gogo` 桌面端窗口，不出现额外终端窗口
 
 ### 5.6 需要 Windows 侧继续验证的点
 

@@ -99,20 +99,20 @@
 - NSIS 默认 `installMode` 是 `currentUser`
 - 安装器会恢复上一次保存的安装路径
 - 如果历史路径是 `Program Files` 这类更适合 per-machine/admin 的位置，current-user 安装可能留下空目录或不可用入口
-- 旧版本主进程启动日志写到 `/tmp/gogo-app-desktop-startup.log`，Windows 下不可用，导致闪退时缺少 Tauri setup 线索
+- 旧版本主进程启动日志写到 `/tmp/gogo-desktop-startup.log`，Windows 下不可用，导致闪退时缺少 Tauri setup 线索
 
 ### 修复
 
 - `src-tauri/tauri.conf.json` 将 NSIS `installMode` 改为 `both`
 - Windows 用户安装时可以明确选择“仅当前用户”或“所有用户”
 - 如果选择 `Program Files`，应走“所有用户”并触发管理员权限
-- Tauri 主进程启动日志改写到 `%TEMP%\gogo-app-desktop-startup.log`
+- Tauri 主进程启动日志改写到 `%TEMP%\gogo-desktop-startup.log`
 
 ### 验收标准
 
 1. 生成的 `installer.nsi` 包含 `!define INSTALLMODE "both"`
 2. 临时目录安装后包含 `gogo-app-desktop.exe`、`gogo-backend.exe`、`app/`、`backend-runtime/`、`pi-runtime/` 和 `knowledge-base/`
-3. 启动安装版后 `%TEMP%\gogo-app-desktop-startup.log` 出现 `setup: main window built`
+3. 启动安装版后 `%TEMP%\gogo-desktop-startup.log` 出现 `setup: main window built`
 4. `gogo-app-desktop` 与 `gogo-backend` 进程均能保持运行，主窗口标题为 `gogo-app`
 
 ## 0.3 2026-04-24：Windows 首次欢迎页关闭后二次启动闪退
@@ -121,7 +121,7 @@
 
 - Windows 安装版第一次启动可以进入首次欢迎页面。
 - 关闭欢迎页面后，再次点击 `gogo-app`，只出现一个短暂黑色命令行窗口，主窗口不再打开。
-- `%TEMP%\gogo-app-desktop-startup.log` 显示 Tauri 已进入 setup，但在准备 backend runtime 时 panic。
+- `%TEMP%\gogo-desktop-startup.log` 显示 Tauri 已进入 setup，但在准备 backend runtime 时 panic。
 
 ### 根因
 
@@ -141,7 +141,7 @@
 
 1. 安装后首次启动可以进入欢迎流程。
 2. 关闭欢迎流程后再次启动，主窗口仍能正常打开。
-3. 首次与二次启动的 `%TEMP%\gogo-app-desktop-startup.log` 都能走到 `setup: main window built`。
+3. 首次与二次启动的 `%TEMP%\gogo-desktop-startup.log` 都能走到 `setup: main window built`。
 4. `%APPDATA%\space.aibuilders.gogoapp\bundled-resources\backend-runtime` 会跨启动复用。
 
 ## 0.4 2026-04-24：Windows 启动时出现额外终端窗口且关闭终端会退出桌面端
@@ -207,7 +207,7 @@
 
 至少确认以下结果同时成立：
 
-1. `open <gogo-app.app>` 后不再启动即崩
+1. `open <gogo.app>` 后不再启动即崩
 2. 启动日志出现：
    - `setup: bundled runtime path`
    - `setup: backend launched`
@@ -313,7 +313,7 @@
 至少执行一次：
 
 ```bash
-open src-tauri/target/release/bundle/macos/gogo-app.app
+open src-tauri/target/release/bundle/macos/gogo.app
 ```
 
 然后检查启动日志是否出现：

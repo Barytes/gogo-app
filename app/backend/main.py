@@ -75,7 +75,7 @@ NO_SESSION_DEPRECATION_MESSAGE = (
 )
 NO_SESSION_DEPRECATION_HEADERS = {
     "Deprecation": "true",
-    "Warning": f'299 gogo-app "{NO_SESSION_DEPRECATION_MESSAGE}"',
+    "Warning": f'299 gogo "{NO_SESSION_DEPRECATION_MESSAGE}"',
 }
 UPLOAD_MAX_BYTES = 50 * 1024 * 1024
 ALLOWED_UPLOAD_EXTENSIONS = {
@@ -294,7 +294,7 @@ def _start_desktop_pi_login_direct() -> dict[str, object]:
     else:
         raise RuntimeError("当前开发态兜底登录只实现了 macOS / Windows 终端拉起流程。")
 
-    detail = "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo-app 会自动刷新 Provider 状态。"
+    detail = "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo 会自动刷新 Provider 状态。"
 
     return {
         "success": True,
@@ -319,7 +319,7 @@ def _local_pi_install_status() -> dict[str, object]:
 
     detail = "已检测到可用的 `pi` 命令。"
     if not command_path:
-        detail = "当前未检测到可用的 `pi` 命令；桌面版会优先尝试使用随包分发的 binary，缺失时再通过本地 npm 安装到 gogo-app 的托管目录。"
+        detail = "当前未检测到可用的 `pi` 命令；桌面版会优先尝试使用随包分发的 binary，缺失时再通过本地 npm 安装到 gogo 的托管目录。"
 
     return {
         "platform": platform.system().lower(),
@@ -1136,7 +1136,7 @@ def start_pi_login() -> dict[str, object]:
     if not is_desktop_runtime():
         raise HTTPException(
             status_code=501,
-            detail="当前仍是 Web 版 gogo-app，暂时不能直接拉起 Pi CLI 登录。桌面版会通过这个接口打开本地 `pi`，并触发原生 `/login` 流程。",
+            detail="当前仍是 Web 版 gogo，暂时不能直接拉起 Pi CLI 登录。桌面版会通过这个接口打开本地 `pi`，并触发原生 `/login` 流程。",
         )
     if not get_pi_command_path():
         pi_install = _get_pi_install_status()
@@ -1172,7 +1172,7 @@ def install_pi() -> dict[str, object]:
     if not is_desktop_runtime():
         raise HTTPException(
             status_code=501,
-            detail="当前仍是 Web 版 gogo-app，暂时不能直接在应用内安装 Pi。",
+            detail="当前仍是 Web 版 gogo，暂时不能直接在应用内安装 Pi。",
         )
     if not _desktop_bridge_url():
         raise HTTPException(

@@ -1,4 +1,4 @@
-# gogo-app
+# gogo
 
 本地知识库工作台：浏览 `Wiki / Raw`，并通过 Pi RPC 驱动聊天式研究助手。
 
@@ -142,7 +142,7 @@ GOGO_DESKTOP_PI_RUNTIME_ROOT=./pi-runtime
 这是因为当前 upstream `pi` 在 macOS 上仍会读取同目录下的 `package.json` 等运行时文件，不能只复制单个 `pi` 文件。  
 如果既没有 bundled `pi`，又没检测到系统里的 `pi`，启动时才会退回到 fallback 安装引导，把 `pi` 装到 app data 下的托管目录。  
 Windows 首发安装介质目前先按 **NSIS `-setup.exe`** 收敛，不再把 `msi` 作为首发必做项。  
-需要特别注意的是：**macOS 上不能直接裸分发 upstream `pi` 运行目录**；它应作为 `gogo-app.app` 的内嵌运行时一起签名，并纳入主应用的 notarization。  
+需要特别注意的是：**macOS 上不能直接裸分发 upstream `pi` 运行目录**；它应作为 `gogo.app` 的内嵌运行时一起签名，并纳入主应用的 notarization。  
 但它**仍不应直接等同于已经完成最终用户分发安装包**，因为真正的安装器静默安装、Windows 构建验收、签名与干净机器回归还没完成。
 
 当前 companion knowledge-base 的路径策略是：

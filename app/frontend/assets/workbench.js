@@ -630,7 +630,7 @@ function renderStartupWizardPanel(currentStep, startup, status) {
   if (currentStep === 0) {
     const message = document.createElement("p");
     message.className = "startup-wizard-lead";
-    message.textContent = "欢迎来到 gogo-app。";
+    message.textContent = "欢迎来到 gogo。";
 
     const detail = document.createElement("p");
     detail.className = "startup-wizard-copy";
@@ -758,7 +758,7 @@ function renderStartupOverlay() {
     startupTitleEl && (startupTitleEl.textContent = "启动检查失败");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "gogo-app 暂时没能读取当前桌面设置。你可以重新检查，或先进入工作台浏览 Wiki。");
+        "gogo 暂时没能读取当前桌面设置。你可以重新检查，或先进入工作台浏览 Wiki。");
     renderKeyValueList(startupStatusListEl, [["错误", startupLoadFailure]]);
     startupBackButtonEl?.classList.add("hidden");
     startupNextButtonEl?.classList.add("hidden");
@@ -782,7 +782,7 @@ function renderStartupOverlay() {
     startupTitleEl && (startupTitleEl.textContent = "正在检查桌面环境");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "gogo-app 正在确认本地知识库、Pi 运行时和模型配置状态，请稍候。");
+        "gogo 正在确认本地知识库、Pi 运行时和模型配置状态，请稍候。");
     renderStartupPhases([
       {
         title: "读取应用设置",
@@ -832,12 +832,12 @@ function renderStartupOverlay() {
     const isKnowledgeBaseStep = startupWizardStep === 2;
 
     if (isWelcomeStep) {
-      startupTitleEl && (startupTitleEl.textContent = "欢迎使用 gogo-app");
+      startupTitleEl && (startupTitleEl.textContent = "欢迎使用 gogo");
       startupDescriptionEl && (startupDescriptionEl.textContent = "我们先完成一个很短的首次配置。");
     } else if (isModelStep) {
       startupTitleEl && (startupTitleEl.textContent = "配置模型");
       startupDescriptionEl &&
-        (startupDescriptionEl.textContent = "请先把你自己的模型接入 gogo-app。完成后再进入下一步。");
+        (startupDescriptionEl.textContent = "请先把你自己的模型接入 gogo。完成后再进入下一步。");
     } else {
       startupTitleEl && (startupTitleEl.textContent = "选择知识库目录");
       startupDescriptionEl &&
@@ -849,7 +849,7 @@ function renderStartupOverlay() {
 
     startupNextButtonEl?.classList.remove("hidden");
     if (startupNextButtonEl) {
-      startupNextButtonEl.textContent = isKnowledgeBaseStep ? "完成并进入 gogo-app" : "下一步";
+      startupNextButtonEl.textContent = isKnowledgeBaseStep ? "完成并进入 gogo" : "下一步";
       startupNextButtonEl.disabled =
         (isModelStep && (!startup.piReady || !model.ready)) || (isKnowledgeBaseStep && !startup.kbReady);
     }
@@ -887,7 +887,7 @@ function renderStartupOverlay() {
       detail: startup.kbReady
         ? `已就绪：${startup.kbPath || "当前目录"}`
         : startup.diagnosticsLoaded
-          ? "当前目录结构还不完整，gogo-app 会继续按 companion knowledge-base 模板补齐。"
+          ? "当前目录结构还不完整，gogo 会继续按 companion knowledge-base 模板补齐。"
           : "正在确认 raw / wiki / inbox 目录。",
       phase: startup.kbReady ? "ready" : "active",
     },
@@ -935,27 +935,27 @@ function renderStartupOverlay() {
     startupTitleEl && (startupTitleEl.textContent = "正在补齐首次启动检查");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "基础设置已经读到，gogo-app 正在进一步确认知识库结构、Pi RPC 和模型配置状态。");
+        "基础设置已经读到，gogo 正在进一步确认知识库结构、Pi RPC 和模型配置状态。");
   } else if (!startup.kbReady) {
     startupTitleEl && (startupTitleEl.textContent = "正在准备 companion knowledge-base");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "gogo-app 已拿到知识库路径，正在确认里面的 raw、wiki 和 inbox 结构已经就绪。");
+        "gogo 已拿到知识库路径，正在确认里面的 raw、wiki 和 inbox 结构已经就绪。");
   } else if (inProgress) {
     startupTitleEl && (startupTitleEl.textContent = "正在安装 Pi");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "gogo-app 正在后台准备 Pi 运行时。安装完成后，你就可以继续走 `/login`、聊天、ingest 和写回链路。");
+        "gogo 正在后台准备 Pi 运行时。安装完成后，你就可以继续走 `/login`、聊天、ingest 和写回链路。");
   } else if (!installed && installSupported) {
     startupTitleEl && (startupTitleEl.textContent = "先安装 Pi，再进入完整工作流");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "检测到当前机器上还没有可用的 `pi`。你可以现在安装，gogo-app 会把它放到自己的托管目录，不会写进你的知识库。");
+        "检测到当前机器上还没有可用的 `pi`。你可以现在安装，gogo 会把它放到自己的托管目录，不会写进你的知识库。");
   } else if (!installed) {
     startupTitleEl && (startupTitleEl.textContent = "当前还不能自动安装 Pi");
     startupDescriptionEl &&
       (startupDescriptionEl.textContent =
-        "这台机器上暂时没有检测到可用的 `npm`，所以 gogo-app 现在还没法自动补齐 `pi`。你仍然可以先进入工作台浏览 Wiki。");
+        "这台机器上暂时没有检测到可用的 `npm`，所以 gogo 现在还没法自动补齐 `pi`。你仍然可以先进入工作台浏览 Wiki。");
   } else if (!model.ready) {
     startupTitleEl && (startupTitleEl.textContent = "再配置一个模型，就能走完整链路");
     startupDescriptionEl &&
@@ -1553,10 +1553,10 @@ function diagnosticsValue(value, fallback = "—") {
 function diagnosticsPiSourceLabel(status) {
   const source = String(status?.command_source || "").trim();
   if (source === "bundled") {
-    return "随 gogo-app 提供";
+    return "随 gogo 提供";
   }
   if (source === "managed") {
-    return "由 gogo-app 安装";
+    return "由 gogo 安装";
   }
   if (source === "system") {
     return "使用系统环境中的 Pi";
@@ -2532,11 +2532,11 @@ function updateProviderAuthModeHelp() {
   }
   if (desktopReady && !installStatus.installed) {
     providerAuthModeHelpEl.textContent =
-      "当前还没有检测到可用的 Pi。可以先点击“安装 Pi”，gogo-app 会优先把 Pi 安装到自己的托管目录，再继续 `/login`。";
+      "当前还没有检测到可用的 Pi。可以先点击“安装 Pi”，gogo 会优先把 Pi 安装到自己的托管目录，再继续 `/login`。";
     return;
   }
   providerAuthModeHelpEl.textContent = desktopReady
-    ? "桌面版会打开 Pi CLI 并触发原生 `/login`；gogo-app 只负责展示状态和刷新结果。"
+    ? "桌面版会打开 Pi CLI 并触发原生 `/login`；gogo 只负责展示状态和刷新结果。"
     : "当前还是 Web 版，这里先保存“未来由 Pi CLI 登录”的 provider 定义；真正的 `/login` 触发会在桌面版接上。";
 }
 

@@ -809,7 +809,7 @@ fn start_pi_install(
                     if preferred_pi_command_path(&thread_app_root, &thread_app_state_dir).is_some()
                     {
                         state.last_detail =
-                            "Pi 已安装到 gogo-app 的托管目录，可以直接继续登录。".to_string();
+                            "Pi 已安装到 gogo 的托管目录，可以直接继续登录。".to_string();
                     } else {
                         state.last_detail = format!(
                             "Pi 安装进程已结束，但当前仍未检测到可执行文件（退出码：{exit_code}）。"
@@ -928,9 +928,9 @@ fn build_pi_install_status(
         }
     } else if command_path.is_some() {
         if command_source == "bundled" {
-            "已检测到随 gogo-app 一起打包的 `pi` binary。".to_string()
+            "已检测到随 gogo 一起打包的 `pi` binary。".to_string()
         } else if command_source == "managed" {
-            "已检测到 gogo-app 托管的 `pi` 运行时。".to_string()
+            "已检测到 gogo 托管的 `pi` 运行时。".to_string()
         } else {
             "已检测到系统中的 `pi` 命令。".to_string()
         }
@@ -1135,7 +1135,7 @@ fn launch_desktop_pi_login(app_root: &Path, app_state_dir: &Path) -> Result<Desk
         return Ok(DesktopLoginResponse {
             success: true,
             detail:
-                "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo-app 会自动刷新 Provider 状态。"
+                "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo 会自动刷新 Provider 状态。"
                     .to_string(),
             command_hint: "/login".to_string(),
         });
@@ -1149,7 +1149,7 @@ fn launch_desktop_pi_login(app_root: &Path, app_state_dir: &Path) -> Result<Desk
         return Ok(DesktopLoginResponse {
             success: true,
             detail:
-                "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo-app 会自动刷新 Provider 状态。"
+                "已打开 Pi 终端。请在终端里手动输入 `/login`，完成登录后 gogo 会自动刷新 Provider 状态。"
                     .to_string(),
             command_hint: "/login".to_string(),
         });
