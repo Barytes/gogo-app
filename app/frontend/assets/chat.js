@@ -2768,6 +2768,7 @@ messagesEl?.addEventListener("click", async (event) => {
     return;
   }
   event.preventDefault();
+  event.stopPropagation();
   await window.WikiWorkbench.openPage(destination.path, destination.source);
 });
 
@@ -2784,7 +2785,8 @@ function createConsultedPagesMeta(pages = []) {
     link.className = "message-link";
     link.type = "button";
     link.textContent = page.title;
-    link.addEventListener("click", () => {
+    link.addEventListener("click", (event) => {
+      event.stopPropagation();
       if (window.WikiWorkbench?.openPage) {
         window.WikiWorkbench.openPage(page.path, page.source || "wiki");
       } else {
