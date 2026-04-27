@@ -24,9 +24,6 @@
 
 - `docs/frontend-workbench-elements.md`
 - `docs/session-management.md`
-- `docs/agent-architecture.md`
-- `docs/gogo-app-architecture.md`
-- `docs/code-doc-mapping.md`
 
 ## 2. 本轮发现的过时文档
 
@@ -127,7 +124,6 @@
 
 本轮新增映射：
 
-- `docs/gogo-app-architecture.md`
 
 原因：
 

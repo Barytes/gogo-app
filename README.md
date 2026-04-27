@@ -68,10 +68,9 @@ gogo 提供了一个内置的 Pi agent，你可以通过 Chat 界面与它对话
 - 你可以下载 Windows / MacOS 安装包并运行使用当前版本的 gogo。
 - 你可以阅读代码、在本地运行，并把它作为参考实现。
 - 目前仅按 best-effort 方式维护，我不计划主动推动新功能或长期支持，不保证及时修复出现的问题。
-- 欢迎感兴趣的读者提交 issue、PR 或 fork 继续探索，尤其是把它作为参考实现或实验起点使用。
 
 
-# 🐶 gogo
+# 🐶 gogo (English)
 
 A desktop app prototype for a local [llm-wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f)-style knowledge base with a built-in AI agent. It is designed to be usable out of the box: you can talk to an AI research assistant and manage and grow your personal knowledge locally, without installing any additional coding agents or configuring plugins.
 
@@ -81,182 +80,75 @@ So I built gogo. Today, I use gogo as my daily entry point for working with llm-
 
 ## Getting Started
 
+gogo provides installers for Windows x64 and macOS (Apple Silicon). You can download the appropriate package from [GitHub Releases](https://github.com/Barytes/gogo/releases).
 
+### 1. First Launch
 
+After installation, you will see a welcome screen on first launch. The first thing you need to do is configure your LLM model. gogo is powered by [Pi Agent](https://github.com/badlogic/pi-mono), which supports both API Key and OAuth-based configuration. If you use LLMs through purchased API access or a coding plan subscription, you can enter your API key, base URL, and related settings in the API Key option. You can also paste in a JSON configuration file provided by a model provider such as OpenClaw, and gogo will recognize it automatically. If you subscribe to a provider's premium plan, you can open Pi in a terminal from the OAuth option and log in to a supported provider with the `\login` command. At the moment, the supported providers are Anthropic (Claude Pro/Max), GitHub Copilot, Google Cloud Code Assist (Gemini CLI), Antigravity, and ChatGPT Plus/Pro (Codex Subscription).
 
+After configuring your LLM model, you need to choose the location of your knowledge base. If you do not already use an llm-wiki-style knowledge base, gogo will create a sample knowledge base for you in the path you select; see [example-knowledge-base](https://github.com/Barytes/gogo/tree/main/example-knowledge-base). If you already use an llm-wiki-style knowledge base with `raw/` and `wiki/` directories, you can point gogo to your own knowledge base instead.
 
-##  Project Status
+### 2. The llm-wiki Workflow
+
+If you are not familiar with llm-wiki, you can start with this article: [llm-wiki](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f). The core idea of llm-wiki is to turn one-off retrieval into knowledge that can be continuously maintained, so that it compounds over time.
+
+The llm-wiki workflow can be summarized with three schemas: 1) **Ingest**: put new material into the `raw/` layer, let the LLM read it, create new wiki pages in the `wiki/` layer, and connect them with existing pages; 2) **Query**: answer questions by searching and synthesizing from `wiki/` first, and return to `raw/` for verification when needed; 3) **lint**: clean up wiki pages and check for conflicts, outdated content, orphan pages, and missing links.
+
+gogo's sample knowledge base, available at [example-knowledge-base](https://github.com/Barytes/gogo/tree/main/example-knowledge-base), gives you a minimal llm-wiki to start from. It includes:
+
+- `wiki/`: maintained wiki pages
+- `raw/`: raw source material
+- `inbox/`: a temporary entry point for new files
+- `skills/`: skills used by the agent
+- `schema/`: defines the three schemas for ingest, query, and lint
+- `AGENTS.md`: the agent's initial instructions
+
+You can customize how the agent behaves inside the knowledge base by modifying the schemas, skills, and `AGENTS.md`.
+
+You can also use this knowledge base with any coding agent you like, such as Claude Code or Codex. It does not depend on gogo.
+
+### 3. Using llm-wiki Through gogo
+
+gogo includes a built-in Pi agent that you can talk to through the Chat interface to work with llm-wiki.
+
+- **Ingest**: the Pi agent ingests content from the knowledge base's `inbox/` directory. You can move files into `inbox/` yourself, or click the `+` button in the chat input to upload a file, and gogo will copy that file into `inbox/`. You can inspect the contents of `inbox/` in the floating inbox panel at the bottom right. Clicking the Ingest button inserts a prompt for the workflow.
+- **Query**: gogo's Pi agent answers questions by synthesizing from the wiki. When the wiki does not contain enough material, it will browse the raw sources to gather more information. It does not include web search by default, so you need to configure a corresponding skill yourself if you want that ability.
+- **lint**: just tell the Pi agent that you want to lint or clean up the knowledge base.
+- **Browsing the Wiki**: gogo has two interface modes, `Wiki` and `Chat`, and you can switch between them with the toggle in the upper right. In Wiki mode, wiki browsing is the main view and Chat appears as a floating panel at the bottom right; in Chat mode, the agent chat window becomes the main view and Wiki appears as the floating panel. Links inside wiki pages and pages mentioned in agent responses can be clicked to jump directly. The Wiki interface also includes simple edit, delete, and create actions. You can also click the page's quote button to insert that page into your prompt.
+- **Skills and Schemas**: the chat window supports slash commands that invoke skills and schemas defined in the knowledge base's `skills/` and `schemas/` directories. You can add, modify, or delete those skills and schemas yourself. gogo also provides a simple panel under `Current Skills` in the settings panel, opened with the `⚙️` button in the upper left, where you can browse, edit, create, and delete skills and schemas.
+- **Models**: the agent chat window includes controls for switching models, thinking level, permissions, and displaying or compacting the context window. You can also add, edit, and delete model provider configurations in the `Models` section of the settings panel opened from the `⚙️` button in the upper left.
+- **Settings Panel**: click the `⚙️` button in the upper left to open the settings panel. The `Knowledge Base` section lets you switch between different knowledge bases. The `Current Skills` section lets you browse and modify the current knowledge base's skills and schemas. The `Models` section is for configuring model providers. The `Diagnostics` section shows log information.
+
+## Design Principles
+
+- **💁 gogo serves the local llm-wiki knowledge base**: it provides a better entry point for llm-wiki, rather than locking knowledge and workflow back into the app itself. Stopping use of gogo does not mean losing anything stored in the knowledge base.
+- **🤝 A unified Wiki + Agent workspace**: gogo brings knowledge browsing, page editing, and conversations that move knowledge work forward into a single workspace, reducing the cost of constantly switching between tools.
+- **🔍 Focused on the llm-wiki use case, not a general-purpose knowledge manager**: gogo prioritizes making llm-wiki-style local knowledge-base workflows feel smooth, instead of sacrificing clear boundaries and usability for broader but less focused scenarios.
+- **👑 The user is the primary owner of the knowledge base**: users should always be able to inspect, modify, migrate, and replace their own knowledge-base structure, skills, schemas, and workflows, rather than being forced into the defaults of a closed system.
+- **🤖 Do not over-black-box the agent**: gogo does not present the agent as invisible magic; instead, it tries to keep model configuration, slash commands, diagnostics, context, and permission boundaries visible to the user.
+- **📦 Out of the box**: gogo aims to minimize setup friction so that users can start using llm-wiki with as little environment preparation as possible.
+
+## Project Status
 
 This project is in **maintenance mode**.
 
-It is published as a portfolio project. Due to limited personal bandwidth, I am not actively developing new features, and this repository should not be treated as production-ready software or a long-term supported desktop product.
+It is published as a portfolio project. Due to limited personal bandwidth, I am no longer actively developing new features, and this repository should not be treated as production-ready software or a long-term supported desktop product.
 
 What this means:
 
-- You can read the code, run it locally, and use it as a reference.
-- Final end-user Windows / macOS installers are not currently guaranteed or actively maintained.
-- Contributions, issues, PRs, and forks are welcome, especially if you find the project useful as a reference or want to continue the experiment in your own direction.
-- However, this repository is maintained on a best-effort basis, and I do not currently plan to actively drive new features or long-term support.
+- You can download and run the current version of gogo through the Windows / macOS installers.
+- You can read the code, run it locally, and use it as a reference implementation.
+- The project is now maintained on a best-effort basis, and I do not plan to actively push new features or provide long-term support.
 
 
-## 技术栈 / Tech Stack
+## 开发者指南 / Developer Guide
 
-- **后端 / Backend:** FastAPI, Python, uvicorn
-- **前端 / Frontend:** Plain HTML / CSS / JavaScript
-- **桌面壳 / Desktop shell:** Tauri v2, Rust
-- **Agent runtime:** Pi RPC integration
-- **知识库 / Knowledge base:** Local Markdown-oriented folders with `wiki/`, `raw/`, `inbox/`, and `skills/`
-- **Markdown / math rendering:** Marked, KaTeX
+如果你想深入了解这个项目，你可以从下面的文档入手，并进一步阅读[docs](https://github.com/Barytes/gogo/tree/main/docs)中的文档。
 
-## 快速启动：Web 模式 / Quick Start: Web Mode
+If you want to know more about this project, you can begin with the following docs and read the documentation in [docs](https://github.com/Barytes/gogo/tree/main/docs).
 
-Web 模式是从源码查看和体验项目的最简单方式。
-
-Web mode is the simplest way to inspect the project from source.
-
-前置要求：
-
-Prerequisites:
-
-- Python 3.9+
-- `uv`
-- 如果你想体验 Pi integration 路径，需要 Node.js 22 或 24。
-- Node.js 22 or 24 if you want the Pi integration path.
-
-启动：
-
-Setup:
-
-```bash
-cd gogo-app
-cp .env.example .env
-uv sync
-uv run uvicorn app.backend.main:app --reload
-```
-
-打开：
-
-Open:
-
-```text
-http://127.0.0.1:8000/
-```
-
-兼容入口：
-
-Useful compatibility routes:
-
-```text
-http://127.0.0.1:8000/chat
-http://127.0.0.1:8000/wiki
-```
-
-默认 `.env.example` 会把 `KNOWLEDGE_BASE_DIR` 指向 `./example-knowledge-base`，这是推荐的本地 starter workspace。
-
-The default `.env.example` points `KNOWLEDGE_BASE_DIR` at `./example-knowledge-base`, which is the recommended starter workspace for local exploration.
-
-## 快速启动：桌面开发模式 / Quick Start: Desktop Dev Mode
-
-桌面模式基于 Tauri，适合开发和实验，不应理解为面向最终用户的成熟安装包。
-
-Desktop mode uses Tauri and is intended for development / exploration, not as a polished end-user release.
-
-前置要求：
-
-Prerequisites:
-
-- Node.js 22 or 24
-- Rust stable toolchain
-- Python runtime
-- 平台相关的 Tauri 桌面依赖
-- Platform-specific Tauri desktop dependencies
-
-启动：
-
-Setup:
-
-```bash
-cd gogo-app
-npm install
-npm run desktop:dev
-```
-
-`npm run desktop:dev` 会通过 Tauri 的 `beforeDevCommand` 启动本地 FastAPI 后端，等待 `http://127.0.0.1:8000` 就绪，然后打开原生窗口。
-
-`npm run desktop:dev` starts the local FastAPI backend through Tauri's `beforeDevCommand`, waits for `http://127.0.0.1:8000`, and opens the native shell.
-
-## 桌面构建说明 / Desktop Build Notes
-
-仓库包含 Tauri 构建路径：
-
-The repository contains a Tauri build path:
-
-```bash
-npm run desktop:build
-```
-
-当前边界：
-
-Current caveats:
-
-- 曾经做过 macOS `.app` / `.dmg` 构建实验，但最终用户分发不是当前 maintenance 目标。
-- macOS `.app` / `.dmg` build experiments have existed, but final end-user distribution is not the current maintenance target.
-- Windows packaging 仍需要真实机器或 CI runner 验证。
-- Windows packaging still requires real machine or CI runner validation.
-- Bundling Pi 可能需要 `GOGO_DESKTOP_PI_BINARY` 或 `GOGO_DESKTOP_PI_RUNTIME_ROOT`。
-- Bundling Pi may require `GOGO_DESKTOP_PI_BINARY` or `GOGO_DESKTOP_PI_RUNTIME_ROOT`.
-- 签名、notarization、干净机器验证和自动更新尚未完成。
-- Signing, notarization, clean-machine validation, and auto-update are not complete.
-
-历史打包记录见：
-
-For the historical packaging notes, see:
-
-- [Desktop packaging guide](docs/desktop-packaging-guide.md)
-- [Release target and boundaries](docs/release-target-and-boundaries.md)
-- [Tauri migration plan](docs/tauri-migration-plan.md)
-
-## 仓库结构 / Repository Map
-
-```text
-gogo-app/
-  app/
-    backend/        FastAPI services, session handling, Pi RPC integration
-    frontend/       Single-page workspace assets
-  src-tauri/        Tauri desktop shell
-  example-knowledge-base/
-                    Starter local knowledge-base workspace
-  docs/             Architecture notes, release notes, and public-readiness plans
-  scripts/          Development and desktop build helpers
-```
-
-## 关键文档 / Key Docs
-
-- [Docs index](docs/index.md)
-- [Open-source / portfolio release plan](docs/open-source-readiness-refactor-plan.md)
-- [Tolaria documentation lessons for gogo](docs/tolaria-documentation-lessons-for-gogo.md)
-- [gogo app architecture](docs/gogo-app-architecture.md)
-- [Agent architecture](docs/agent-architecture.md)
-- [Session management](docs/session-management.md)
-- [Frontend workbench elements](docs/frontend-workbench-elements.md)
-
-## 已知限制 / Known Limitations
-
-- 本项目处于 maintenance mode，不再积极开发新功能。
-- This project is in maintenance mode and is not actively feature-developed.
-- 当前代码库包含若干长文件，更适合配合索引文档阅读，而不是被视为已经完成理想模块拆分的架构。
-- The current codebase contains several large files that should be navigated with supporting docs rather than treated as a polished modular architecture.
-- 桌面端更适合理解为开发版 / 原型路径，而不是成熟消费级安装包。
-- The desktop app is best understood as a development build / prototype path, not a finished consumer installer.
-- Pi integration 是 chat 行为的核心，可能需要本地环境配置。
-- The Pi integration is central to chat behavior and may require local setup.
-- 当前还没有完整的公开 CI、release 或支持流程。
-- There is not yet a complete public CI, release, or support process.
-- 公开作品快照前，还建议补充截图、license、code index docs 和简洁的 concepts 文档。
-- Screenshots, license choice, code index docs, and a concise concepts document should be added before a polished public snapshot.
-
-## License
-
-当前仓库还没有 public license file。正式作为可复用开源项目前，请先添加 `LICENSE`。如果没有特殊原因，轻量作品型发布建议使用 MIT。
-
-This repository does not currently include a public license file. Add a `LICENSE` before treating the project as reusable open source. MIT is the recommended default for a lightweight portfolio release unless there is a specific reason to choose another license.
+- [文档索引 / Documentation index](docs/index.md)
+- [开发者文档 / Developer guide](docs/public/developer-guide.md)
+- [设计原则 / Design principles](docs/public/design-principles.md)
+- [架构概览 / Architecture overview](docs/public/architecture-overview.md)
+- [知识库指南 / Knowledge base guide](docs/public/knowledge-base-guide.md)

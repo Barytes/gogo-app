@@ -4,7 +4,7 @@
 
 > 本文档描述 `knowledge-base` 的架构、schema、行为、职责与边界。  
 > 它不描述某一个具体应用如何实现 UI 或模型接入。  
-> 项目级关系见 [gogo-project-architecture.md](gogo-project-architecture.md)。
+> 早期项目级关系文档已不再作为当前公开文档维护。
 
 ## 1. 定位
 
@@ -212,8 +212,4 @@ server 端 knowledge-base 应定义并约束：
 
 ## 10. 相关文档
 
-- [gogo-project-architecture.md](gogo-project-architecture.md)
 - [gogo-app-architecture.md](gogo-app-architecture.md)
-- [gogo-client-architecture.md](gogo-client-architecture.md)
-- [gogo-server-architecture.md](gogo-server-architecture.md)
-

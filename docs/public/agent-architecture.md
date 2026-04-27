@@ -318,4 +318,4 @@ workbench.js / chat.js
 - `app/backend/pi_rpc_client.py`
 - `app/backend/main.py`
 - `app/backend/config.py`
-- `docs/session-management.md`
+- `docs/public/session-management.md`

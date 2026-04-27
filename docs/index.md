@@ -1,42 +1,65 @@
-# Docs Index
+# gogo Documentation Index
 
-**最后更新**: 2026-04-25
+**Last updated:** 2026-04-27
 
-> 说明：本索引仅覆盖 `docs/` 根目录文档，不包含 `docs/pi/`。
+## Folder Layout
 
-## 产品与总览
+- `public/`: current docs that are still useful for understanding the project, running it from source, or reading the implementation.
+- `archive/`: historical plans, packaging notes, logs, deprecated maintenance files, and vendored reference docs.
+- `assets/`: README and documentation media assets.
 
-- [release-target-and-boundaries.md](release-target-and-boundaries.md) - 当前对外发布目标、支持范围、外部依赖与开发态/正式分发边界
-- [product-definition-belief.md](product-definition-belief.md) - 产品目标与价值主张
-- [open-source-readiness-refactor-plan.md](open-source-readiness-refactor-plan.md) - 将当前仓库整理成适合公开展示和简历引用的最小作品型发布计划
-- [tolaria-documentation-lessons-for-gogo.md](tolaria-documentation-lessons-for-gogo.md) - 从 Tolaria 学习公开文档、设计原则和 AI-native 项目叙事的可迁移做法
-- [课题组公共知识库的联邦架构设计.md](课题组公共知识库的联邦架构设计.md) - 联邦架构全局设计（历史/全局视角）
+## Public Docs
 
-## 架构（gogo 项目）
+These documents are suitable for readers, reviewers, and developers coming to the project fresh.
 
-- [gogo-project-architecture.md](gogo-project-architecture.md) - gogo 项目总览：gogo-app / gogo-server / gogo-client / knowledge-base 的关系
-- [gogo-app-architecture.md](gogo-app-architecture.md) - gogo-app 的职责、边界与前后端架构
-- [desktop-packaging-options.md](desktop-packaging-options.md) - gogo-app 桌面应用封装方案评估与当前路线说明
-- [desktop-packaging-guide.md](desktop-packaging-guide.md) - 当前仓库下 macOS / Windows 的桌面打包方法、前置条件、产物位置与已知边界
-- [desktop-packaging-regressions.md](desktop-packaging-regressions.md) - 桌面打包真实回归、根因、修复与发包前强制检查清单
-- [tauri-migration-plan.md](tauri-migration-plan.md) - gogo-app 当前 Tauri 桌面壳实现、目标架构与后续迁移顺序
-- [workspace-and-agent-runtime-refactor-plan.md](workspace-and-agent-runtime-refactor-plan.md) - 下一阶段两条结构性重构计划：内容工作区抽象，以及“ACP 外接 agent + bundled Pi fallback”的 runtime 抽象
-- [gogo-client-architecture.md](gogo-client-architecture.md) - gogo-client 的职责、边界与同步端架构设计
-- [gogo-server-architecture.md](gogo-server-architecture.md) - gogo-server 的职责、边界与聚合端架构设计
+- [Design principles](public/design-principles.md) - product principles and tradeoffs
+- [Knowledge base guide](public/knowledge-base-guide.md) - `wiki/`, `raw/`, `inbox/`, skills, schemas, and `AGENTS.md`
+- [Architecture overview](public/architecture-overview.md) - main app layers and runtime boundaries
+- [Developer guide](public/developer-guide.md) - local setup, desktop development, build notes, and repo map
 
-## 架构（Agent / Session）
+## Public Implementation References
 
-- [agent-architecture.md](agent-architecture.md) - 当前 Agent 后端实现（RPC-only）
-- [session-management.md](session-management.md) - Session 管理与恢复机制
-- [agent-session-refactor-assessment.md](agent-session-refactor-assessment.md) - Agent/Session 重构评估与里程碑
-- [frontend-workbench-elements.md](frontend-workbench-elements.md) - 前端工作台页面元素、状态与交互实现说明
-- [model-provider-configuration-options.md](model-provider-configuration-options.md) - 用户自定义 model provider 的可选方案、取舍与推荐路线
-- [slash-command-scope.md](slash-command-scope.md) - slash 命令的来源边界、候选范围、取舍与推荐决策
-- [session-performance-optimization-log.md](session-performance-optimization-log.md) - 会话切换 / 启动恢复卡顿的排查、优化与迭代记录
+These are more detailed implementation notes. They are still useful, but you usually do not need to read them first.
 
-## 规范与映射
+- [gogo-app architecture](public/gogo-app-architecture.md) - app responsibilities, frontend/backend shape, and current implementation boundary
+- [Agent architecture](public/agent-architecture.md) - Pi RPC agent backend and runtime orchestration
+- [Session management](public/session-management.md) - session persistence, recovery, and history behavior
+- [Frontend workbench elements](public/frontend-workbench-elements.md) - Wiki / Chat workspace UI elements and data sources
+- [Knowledge-base architecture](public/knowledge-base-architecture.md) - deeper knowledge-base responsibilities and schema boundaries
+- [Pi security boundary](public/pi-security-boundary.md) - local security mode, audit logs, and command/write boundaries
+- [Slash command scope](public/slash-command-scope.md) - slash command product boundary and source rules
 
-- [knowledge-base-architecture.md](knowledge-base-architecture.md) - knowledge-base 的架构、schema、行为与边界
-- [code-doc-mapping.md](code-doc-mapping.md) - 代码文件与解释文档映射
-- [problem-log.md](problem-log.md) - 开发问题、根因与解决方案记录
-- [documentation-cleanup-audit-2026-04-15.md](documentation-cleanup-audit-2026-04-15.md) - 本轮文档清理与覆盖性审计结果
+## Archive
+
+Archived documents are kept for traceability. They may be stale, incomplete, or written for a previous project phase.
+
+### Planning
+
+- [Open-source readiness refactor plan](archive/planning/open-source-readiness-refactor-plan.md)
+- [Release target and boundaries](archive/planning/release-target-and-boundaries.md)
+- [Product definition belief](archive/planning/product-definition-belief.md)
+- [Tolaria documentation lessons for gogo](archive/planning/tolaria-documentation-lessons-for-gogo.md)
+- [Agent session refactor assessment](archive/planning/agent-session-refactor-assessment.md)
+
+### Packaging
+
+- [Desktop packaging options](archive/packaging/desktop-packaging-options.md)
+- [Desktop packaging guide](archive/packaging/desktop-packaging-guide.md)
+- [Desktop packaging regressions](archive/packaging/desktop-packaging-regressions.md)
+- [Tauri migration plan](archive/packaging/tauri-migration-plan.md)
+
+### Logs
+
+- [Problem log](archive/logs/problem-log.md)
+- [Session performance optimization log](archive/logs/session-performance-optimization-log.md)
+- [Documentation cleanup audit](archive/logs/documentation-cleanup-audit-2026-04-15.md)
+
+### Deprecated
+
+- [Archived TASKS](archive/deprecated/TASKS.md)
+- [Archived code-doc mapping](archive/deprecated/code-doc-mapping.md)
+- [Archived model provider options](archive/deprecated/model-provider-configuration-options.md)
+
+### Vendored References
+
+- [Pi docs mirror](archive/vendor/pi/README.md) - local copy of Pi documentation used as implementation reference for Pi-related work

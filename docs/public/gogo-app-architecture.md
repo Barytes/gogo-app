@@ -3,7 +3,7 @@
 **最后更新**: 2026-04-18
 
 > 本文档描述 `gogo-app` 这个应用产品本身的职责、边界与当前前后端架构。  
-> 项目级关系见 [gogo-project-architecture.md](gogo-project-architecture.md)。  
+> 早期项目级关系文档已不再作为当前公开文档维护。  
 > knowledge-base 的内容与规范架构见 [knowledge-base-architecture.md](knowledge-base-architecture.md)。
 
 ## 1. 定位
@@ -16,7 +16,7 @@
 - Web 版与桌面开发版主要承担开发、验证和过渡职责
 
 但当前仓库的**实际发布边界**仍需区分“开发者可运行的桌面版”和“最终用户双击可安装的桌面版”。  
-当前对外发布目标、支持范围与已知限制见 [release-target-and-boundaries.md](release-target-and-boundaries.md)。
+当前对外发布目标、支持范围与已知限制的历史记录见 [release-target-and-boundaries.md](../archive/planning/release-target-and-boundaries.md)。
 
 它的目标是：
 
@@ -249,6 +249,6 @@ Windows / macOS 的 `desktop:dev` 还保留 Python 后端直连兜底：当 Taur
 - [session-management.md](session-management.md) - gogo-app 中 Session 管理与恢复机制
 - [frontend-workbench-elements.md](frontend-workbench-elements.md) - gogo-app 前端页面元素、状态与交互实现说明
 - [pi-security-boundary.md](pi-security-boundary.md) - 首发前最小安全边界、默认限制与后续增强方向
-- [documentation-cleanup-audit-2026-04-15.md](documentation-cleanup-audit-2026-04-15.md) - 当前文档覆盖性审计结果与本轮清理范围
-- [desktop-packaging-options.md](desktop-packaging-options.md) - gogo-app 桌面应用封装方案评估与推荐路线
-- [tauri-migration-plan.md](tauri-migration-plan.md) - 当前 Tauri 桌面壳实现与后续迁移顺序
+- [documentation-cleanup-audit-2026-04-15.md](../archive/logs/documentation-cleanup-audit-2026-04-15.md) - 当前文档覆盖性审计结果与本轮清理范围
+- [desktop-packaging-options.md](../archive/packaging/desktop-packaging-options.md) - gogo-app 桌面应用封装方案评估与推荐路线
+- [tauri-migration-plan.md](../archive/packaging/tauri-migration-plan.md) - 当前 Tauri 桌面壳实现与后续迁移顺序

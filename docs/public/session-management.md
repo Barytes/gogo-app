@@ -388,4 +388,4 @@ Session 主链路已收敛为 **RPC-only + session-only chat API**：
 - `app/backend/pi_rpc_client.py`
 - `app/backend/main.py`
 - `app/frontend/assets/chat.js`
-- `docs/agent-architecture.md`
+- `docs/public/agent-architecture.md`

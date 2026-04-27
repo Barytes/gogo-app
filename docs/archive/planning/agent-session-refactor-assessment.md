@@ -10,7 +10,7 @@
 
 ## 1. 目标
 
-基于当前实现和 `docs/pi/` 文档，完成 Pi SDK 会话能力探针，并给出两套“最优重构”方案：
+基于当前实现和本地 Pi 文档镜像，完成 Pi SDK 会话能力探针，并给出两套“最优重构”方案：
 
 - 方案 F：完全重构（你偏好的方向）
 - 方案 G：渐进重构（风险最小方向）
@@ -21,12 +21,7 @@
 
 ## 2. 会话能力探针（已完成）
 
-探针来源：
-
-- `docs/pi/session.md`
-- `docs/pi/sdk.md`
-- `docs/pi/rpc.md`
-- `docs/pi/README.md`
+探针来源：本地 Pi 文档镜像。
 
 ## 2.1 已确认的会话能力
 
@@ -332,4 +327,4 @@ Cons：
 
 1. 当前仓库并未包含 `node_modules`，因此本次探针是“文档能力探针”，不是“本地二进制行为实测”。
 2. 文档已明确 `SessionManager.inMemory()` 不持久化，因此它不能导出 Pi 原生 JSONL 会话。
-3. 若切到 RPC，必须按 `docs/pi/rpc.md` 的 LF JSONL framing 实现，不能直接复用不兼容的行分割器实现。
+3. 若切到 RPC，必须按 Pi RPC 文档中的 LF JSONL framing 实现，不能直接复用不兼容的行分割器实现。

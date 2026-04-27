@@ -1,8 +1,7 @@
 # gogo-app 任务列表
 
 > 本文档只维护 `gogo-app` 自身的任务。  
-> 项目级架构参考：[gogo-project-architecture.md](docs/gogo-project-architecture.md)  
-> 应用架构参考：[gogo-app-architecture.md](docs/gogo-app-architecture.md)
+> 本文件为归档任务记录，路径与架构引用可能已不再对应当前文档结构。
 
 **最后更新**: 2026-04-24
 
@@ -80,28 +79,12 @@
   - 结论：保留 `consulted_pages`，但将其明确为应用层 UI 元数据，只表示“后端预检索到并展示给前端的候选页面”，不是 knowledge-base 规范的一部分，也不是主 session 链路的权威 grounding 元数据。
   - 当前策略：主产品路径继续以 session + Pi 原生会话 + 工具调用为主；固定检索与 `consulted_pages` 仅服务于 legacy no-session 兼容路径。
 
-- [ ] 规划 Agent runtime 抽象，支持“外接本地 coding agent + bundled Pi fallback”
-  - [ ] 将当前 Pi-only 架构提升为 runtime manager + adapter 结构，而不是让 Agent 层默认等于 `pi --mode rpc`
-  - [ ] 明确 bundled Pi、system Pi、ACP agent 三类 runtime profile 的配置模型、诊断模型与切换语义
-  - [ ] 评估并设计 ACP 接入层，优先对接 `initialize`、`session/new`、`session/load`、`session/prompt`、`session/cancel`、`session/update` 与 permission request 映射
-  - [ ] 明确 Claude Code、Codex 等外部 agent 的接入边界：默认通过 ACP-compatible agent 或 bridge 接入，不在 `gogo-app` 中直接实现各家私有协议
-  - [ ] 保留 bundled Pi runtime 作为默认体验和 fallback 路径，避免外接 agent 配置失败时整条聊天主链路不可用
-  - 参考文档：`docs/workspace-and-agent-runtime-refactor-plan.md`
-
 ### 1. gogo-app 与外部 knowledge-base 的连接质量
 
 - [x] 明确 `KNOWLEDGE_BASE_DIR` 接入体验
 - [x] 提升知识库切换/初始化时的错误提示
 - [x] 明确 gogo-app 如何发现并展示当前连接的 knowledge-base 信息
 - 结论：后端已支持运行时读取与切换知识库目录，前端设置面板可展示当前知识库名称、路径与最近使用列表；切换失败时会明确提示“目录不存在”“缺少 `wiki/` / `raw/` 子目录”等错误；切换知识库后会按知识库 namespace 隔离 session 存储，避免不同知识库的会话互相混淆。
-
-- [ ] 规划内容工作区抽象，解除 `wiki/raw` 目录强绑定
-  - [ ] 将当前“知识库目录”抽象为更通用的 workspace descriptor，至少区分 `knowledge-base` 与 `markdown-folder` 两种模式
-  - [ ] 明确 `markdown-folder` 模式第一阶段支持范围：Markdown 浏览、搜索、编辑、新建、删除
-  - [ ] 明确 `raw / inbox / skills / schemas / AGENTS.md` 在普通 Markdown 工作区中的降级策略，避免 UI 与后端继续假设这些目录恒定存在
-  - [ ] 调整启动引导、diagnostics、桌面 provision 文案与错误提示，使其围绕“工作区”而不是固定 `knowledge-base/wiki/raw` 结构
-  - [ ] 评估新的 workspace 抽象对安全边界、session namespace 和桌面 companion knowledge-base 路径选择的影响
-  - 参考文档：`docs/workspace-and-agent-runtime-refactor-plan.md`
 
 ### 2. 桌面应用封装
 
